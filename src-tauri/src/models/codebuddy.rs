@@ -1,0 +1,202 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodebuddyAccount {
+    pub id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enterprise_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enterprise_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+
+    pub access_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dosage_notify_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dosage_notify_zh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dosage_notify_en: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_raw: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+
+    // CN checkin fields (only populated for CN accounts)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_checkin_time: Option<i64>,
+    #[serde(default)]
+    pub checkin_streak: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkin_rewards: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_query_last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_query_last_error_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_updated_at: Option<i64>,
+
+    pub created_at: i64,
+    pub last_used: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodebuddyAccountSummary {
+    pub id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_updated_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub created_at: i64,
+    pub last_used: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodebuddyAccountIndex {
+    pub version: String,
+    pub accounts: Vec<CodebuddyAccountSummary>,
+}
+
+impl CodebuddyAccountIndex {
+    pub fn new() -> Self {
+        Self {
+            version: "1.0".to_string(),
+            accounts: Vec::new(),
+        }
+    }
+}
+
+impl Default for CodebuddyAccountIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodebuddyOAuthCompletePayload {
+    pub email: String,
+    pub uid: Option<String>,
+    pub nickname: Option<String>,
+    pub enterprise_id: Option<String>,
+    pub enterprise_name: Option<String>,
+
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub token_type: Option<String>,
+    pub expires_at: Option<i64>,
+    pub domain: Option<String>,
+
+    pub plan_type: Option<String>,
+    pub dosage_notify_code: Option<String>,
+    pub dosage_notify_zh: Option<String>,
+    pub dosage_notify_en: Option<String>,
+    pub payment_type: Option<String>,
+
+    pub quota_raw: Option<serde_json::Value>,
+    pub auth_raw: Option<serde_json::Value>,
+    pub profile_raw: Option<serde_json::Value>,
+    pub usage_raw: Option<serde_json::Value>,
+
+    pub status: Option<String>,
+    pub status_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodebuddyOAuthStartResponse {
+    pub login_id: String,
+    pub verification_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_uri_complete: Option<String>,
+    pub expires_in: i64,
+    pub interval_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckinStatusResponse {
+    pub today_checked_in: bool,
+    pub active: bool,
+    pub streak_days: i64,
+    pub daily_credit: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub today_credit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_streak_day: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_streak_day: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkin_dates: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckinResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reward: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_checkin_in: Option<i64>,
+}
+
+impl CodebuddyAccount {
+    pub fn summary(&self) -> CodebuddyAccountSummary {
+        CodebuddyAccountSummary {
+            id: self.id.clone(),
+            email: self.email.clone(),
+            tags: self.tags.clone(),
+            plan_type: self.plan_type.clone(),
+            uid: self.uid.clone(),
+            payment_type: self.payment_type.clone(),
+            quota_raw: self.quota_raw.clone(),
+            usage_raw: self.usage_raw.clone(),
+            usage_updated_at: self.usage_updated_at,
+            status: self.status.clone(),
+            created_at: self.created_at,
+            last_used: self.last_used,
+        }
+    }
+}
