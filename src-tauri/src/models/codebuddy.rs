@@ -12,6 +12,12 @@ pub struct CodebuddyAccount {
     pub enterprise_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enterprise_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_context_raw: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
 
@@ -80,6 +86,16 @@ pub struct CodebuddyAccountSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enterprise_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enterprise_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_context_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_raw: Option<serde_json::Value>,
@@ -114,6 +130,14 @@ impl Default for CodebuddyAccountIndex {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CodebuddyCnModelInfo {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub source: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CodebuddyOAuthCompletePayload {
     pub email: String,
@@ -121,6 +145,9 @@ pub struct CodebuddyOAuthCompletePayload {
     pub nickname: Option<String>,
     pub enterprise_id: Option<String>,
     pub enterprise_name: Option<String>,
+    pub account_scope: Option<String>,
+    pub account_context_id: Option<String>,
+    pub account_context_raw: Option<serde_json::Value>,
 
     pub access_token: String,
     pub refresh_token: Option<String>,
@@ -190,6 +217,11 @@ impl CodebuddyAccount {
             tags: self.tags.clone(),
             plan_type: self.plan_type.clone(),
             uid: self.uid.clone(),
+            enterprise_id: self.enterprise_id.clone(),
+            enterprise_name: self.enterprise_name.clone(),
+            account_scope: self.account_scope.clone(),
+            account_context_id: self.account_context_id.clone(),
+            account_context_raw: self.account_context_raw.clone(),
             payment_type: self.payment_type.clone(),
             quota_raw: self.quota_raw.clone(),
             usage_raw: self.usage_raw.clone(),

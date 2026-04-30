@@ -13,6 +13,38 @@ pub fn update_dynamic_forwarding_rules(old_model: String, new_model: String) {
     DYNAMIC_MODEL_FORWARDING_RULES.insert(old_model, new_model);
 }
 
+pub const BUDDY_MODEL_CATALOG: &[&str] = &[
+    "auto",
+    "hy3-preview",
+    "glm-5v-turbo",
+    "glm-5.1",
+    "glm-5.0-turbo",
+    "kimi-k2.6",
+    "kimi-k2.5",
+    "minimax-m2.7",
+    "deepseek-v4-flash",
+    "deepseek-v3.2",
+];
+
+pub fn canonicalize_buddy_model_id(model_name: &str) -> Option<String> {
+    let lower = model_name.trim().to_lowercase();
+    if lower == "auto"
+        || lower.starts_with("hy3-")
+        || lower.starts_with("glm-")
+        || lower.starts_with("kimi-")
+        || lower.starts_with("minimax-")
+        || lower.starts_with("deepseek-")
+    {
+        Some(lower)
+    } else {
+        None
+    }
+}
+
+pub fn get_buddy_model_catalog() -> Vec<String> {
+    BUDDY_MODEL_CATALOG.iter().map(|id| id.to_string()).collect()
+}
+
 static CLAUDE_TO_GEMINI: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     let mut m = HashMap::new();
 
@@ -165,30 +197,9 @@ pub async fn get_all_dynamic_models(
         }
     }
 
-    // 5. 确保包含常用的 Gemini/画画模型 ID
-    model_ids.insert("gemini-3.1-pro-low".to_string());
-    
-    // [NEW] Issue #247: Dynamically generate all Image Gen Combinations
-    let base = "gemini-3-pro-image";
-    let resolutions = vec!["", "-2k", "-4k"];
-    let ratios = vec!["", "-1x1", "-4x3", "-3x4", "-16x9", "-9x16", "-21x9"];
-    
-    for res in resolutions {
-        for ratio in ratios.iter() {
-            let mut id = base.to_string();
-            id.push_str(res);
-            id.push_str(ratio);
-            model_ids.insert(id);
-        }
+    for id in BUDDY_MODEL_CATALOG {
+        model_ids.insert((*id).to_string());
     }
-
-    model_ids.insert("gemini-2.0-flash-exp".to_string());
-    model_ids.insert("gemini-2.5-flash".to_string());
-    // gemini-2.5-pro removed 
-    model_ids.insert("gemini-3-flash".to_string());
-    model_ids.insert("gemini-3.1-pro-high".to_string());
-    model_ids.insert("gemini-3.1-pro-low".to_string());
-
 
     let mut sorted_ids: Vec<_> = model_ids.into_iter().collect();
     sorted_ids.sort();
@@ -309,7 +320,11 @@ pub fn resolve_model_route(
 /// Returns `None` if the model doesn't match any of the 3 protected categories.
 pub fn normalize_to_standard_id(model_name: &str) -> Option<String> {
     let lower = model_name.to_lowercase();
-    
+
+    if let Some(buddy_id) = canonicalize_buddy_model_id(&lower) {
+        return Some(buddy_id);
+    }
+
     // 1. image 资源 (优先匹配，使用 contains 匹配以支持任何变体，如 gemini-3.1-flash-image)
     if lower.contains("image") {
         return Some("gemini-3-pro-image".to_string());

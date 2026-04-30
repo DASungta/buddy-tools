@@ -144,8 +144,8 @@ export interface AppConfig {
     auto_sync: boolean;
     sync_interval: number;
     default_export_path?: string;
-    antigravity_executable?: string; // [NEW] 手动指定的反重力程序路径
-    antigravity_args?: string[]; // [NEW] Antigravity 启动参数
+    antigravity_executable?: string;
+    antigravity_args?: string[];
     auto_launch?: boolean; // 开机自动启动
     auto_check_update?: boolean; // 自动检查更新
     update_check_interval?: number; // 更新检查间隔（小时）

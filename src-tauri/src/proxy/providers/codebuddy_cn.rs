@@ -62,6 +62,26 @@ fn build_client(
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
+fn codebuddy_error_response(
+    status: StatusCode,
+    message: impl Into<String>,
+    error_type: &str,
+    code: &str,
+) -> Response {
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        axum::Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": error_type,
+                "code": code
+            }
+        })),
+    )
+        .into_response()
+}
+
 fn inject_codebuddy_cn_headers(headers: &mut HeaderMap, token: &str, user_id: &str) {
     if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token)) {
         headers.insert(header::AUTHORIZATION, v);
@@ -89,17 +109,29 @@ pub async fn forward_openai_json(
 ) -> Response {
     let cb = state.codebuddy_cn.read().await.clone();
     if !cb.enabled || cb.dispatch_mode == crate::proxy::CodeBuddyDispatchMode::Off {
-        return (StatusCode::BAD_REQUEST, "CodeBuddy CN is disabled").into_response();
+        return codebuddy_error_response(
+            StatusCode::BAD_REQUEST,
+            "CodeBuddy account/token is not configured",
+            "invalid_request_error",
+            "codebuddy_not_configured",
+        );
     }
 
     let (active_token, active_user_id) = resolve_active_codebuddy_cn_credentials(&cb).await;
 
     if active_token.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "CodeBuddy CN token is not set").into_response();
+        return codebuddy_error_response(
+            StatusCode::BAD_REQUEST,
+            "CodeBuddy account/token is not configured",
+            "invalid_request_error",
+            "codebuddy_not_configured",
+        );
     }
 
     if let Some(model) = body.get("model").and_then(|v| v.as_str()) {
-        if model.starts_with("claude-") || model.starts_with("gpt-") {
+        if crate::proxy::common::model_mapping::canonicalize_buddy_model_id(model).is_none()
+            && (model.starts_with("claude-") || model.starts_with("gpt-"))
+        {
             body["model"] = Value::String(cb.model.clone());
         }
     }
@@ -124,7 +156,14 @@ pub async fn forward_openai_json(
     let upstream_proxy = state.upstream_proxy.read().await.clone();
     let client = match build_client(Some(upstream_proxy), timeout_secs) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => {
+            return codebuddy_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e,
+                "server_error",
+                "codebuddy_client_error",
+            );
+        }
     };
 
     let mut headers = HeaderMap::new();
@@ -157,11 +196,12 @@ pub async fn forward_openai_json(
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            return (
+            return codebuddy_error_response(
                 StatusCode::BAD_GATEWAY,
                 format!("CodeBuddy CN upstream request failed: {}", e),
-            )
-                .into_response();
+                "upstream_error",
+                "codebuddy_upstream_request_failed",
+            );
         }
     };
 
@@ -189,11 +229,12 @@ pub async fn forward_openai_json(
         let raw = match resp.bytes().await {
             Ok(b) => b,
             Err(e) => {
-                return (
+                return codebuddy_error_response(
                     StatusCode::BAD_GATEWAY,
                     format!("CodeBuddy CN read error: {}", e),
+                    "upstream_error",
+                    "codebuddy_upstream_read_failed",
                 )
-                    .into_response()
             }
         };
 
@@ -201,9 +242,21 @@ pub async fn forward_openai_json(
             "[CodeBuddy CN] non-stream raw body (first 512 bytes): {}",
             std::str::from_utf8(&raw[..raw.len().min(512)]).unwrap_or("(invalid utf8)")
         );
+        if !status.is_success() {
+            let message = std::str::from_utf8(&raw)
+                .unwrap_or("CodeBuddy CN upstream request failed")
+                .to_string();
+            return codebuddy_error_response(
+                status,
+                message,
+                "upstream_error",
+                "codebuddy_upstream_error",
+            );
+        }
+
         let assembled = assemble_sse_to_json(&raw);
         (
-            StatusCode::OK,
+            status,
             [(header::CONTENT_TYPE, "application/json")],
             assembled,
         )

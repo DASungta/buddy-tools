@@ -1841,17 +1841,9 @@ fn build_generation_config(
             // for gemini-3.1-pro-high / gemini-3.1-pro-low in adaptive mode.
             let lower_mapped = mapped_model.to_lowercase();
             if lower_mapped.contains("claude") {
-                // Claude 系列走 Vertex AI 原生协议，支持 thinkingLevel 分级参数
-                let mapped_level = match effort.map(|e| e.to_lowercase()).as_deref() {
-                    Some("low") => "low",
-                    Some("medium") => "medium",
-                    Some("high") | Some("max") => "high",
-                    _ => "high",
-                };
-                tracing::debug!("[Claude-Request] Mapping adaptive mode to thinkingLevel: {} for Claude model", mapped_level);
-                thinking_config["thinkingLevel"] = json!(mapped_level);
-                // Claude using thinkingLevel must NOT have thinkingBudget to avoid conflict
-                thinking_config.as_object_mut().unwrap().remove("thinkingBudget");
+                let _ = effort;
+                tracing::debug!("[Claude-Request] Mapping adaptive mode to thinkingBudget -1 for Claude model");
+                thinking_config["thinkingBudget"] = json!(-1);
             } else {
                 // Gemini 系列（含 gemini-3.x）走 v1internal 协议，只接受 thinkingBudget，不支持 thinkingLevel
                 // [FIX #2007] Cherry Studio / Claude Protocol 400 Error Fix
@@ -1863,9 +1855,8 @@ fn build_generation_config(
             }
             
             // 针对自适应模式，如果没有显式设置，确保 maxOutputTokens 给足空间
-            // OpenAI mapper uses 57344 (24576 + 32768), we normally use 64k limit.
             if config.get("maxOutputTokens").is_none() {
-                config["maxOutputTokens"] = json!(64000);
+                config["maxOutputTokens"] = json!(131072);
             }
         } else {
             // [FIX #2007] Opus 4.6 Thinking Alignment (OpenAI Protocol Recipe)
@@ -1916,8 +1907,7 @@ fn build_generation_config(
     let req_adaptive = claude_req.thinking.as_ref().map(|t| t.type_ == "adaptive").unwrap_or(false);
     
     let is_adaptive_effective = (req_adaptive || global_adaptive) && model_lower.contains("claude");
-    // [FIX] Lower default overhead to keep total under 65536
-    let final_overhead = if is_adaptive_effective { 64000 } else { 32768 };
+    let final_overhead = if is_adaptive_effective { 131072 } else { 32768 };
 
     // [FIX #2007] Opus 4.6 Thinking Alignment
     // OpenAI logs show maxOutputTokens = 57344 (24576 + 32768)
@@ -1957,9 +1947,7 @@ fn build_generation_config(
 
 
     if let Some(val) = final_max_tokens {
-        // [FIX] Cap maxOutputTokens to 65536 to avoid INVALID_ARGUMENT (Cherry Studio sends 128000)
-        // Gemini models typically support max 8192 or 65536 output tokens. 128k is usually invalid.
-        let safe_limit = 65536;
+        let safe_limit = if is_adaptive_effective { 131072 } else { 65536 };
         if val > safe_limit {
             tracing::warn!(
                 "[Generation-Config] Capping maxOutputTokens from {} to {} to prevent 400 Invalid Argument",
@@ -2712,11 +2700,9 @@ mod tests {
     }
     #[test]
     fn test_claude_flash_thinking_budget_capping() {
-        // Use full path or ensure import of ThinkingConfig
-        // transform_claude_request and models are needed.
-        // Assuming models are available via super imports, but let's be explicit if needed.
+        let _lock = crate::proxy::config::test_config_lock();
+        update_thinking_budget_config(ThinkingBudgetConfig::default());
 
-        // Setup request with high budget
         let req = ClaudeRequest {
             model: "gemini-2.0-flash-thinking-exp".to_string(), // Contains "flash"
             messages: vec![],
@@ -2890,6 +2876,7 @@ mod tests {
 
     #[test]
     fn test_claude_adaptive_global_config() {
+        let _lock = crate::proxy::config::test_config_lock();
         // Set global config to Adaptive + High effort
         let config = ThinkingBudgetConfig {
             mode: crate::proxy::config::ThinkingBudgetMode::Adaptive,

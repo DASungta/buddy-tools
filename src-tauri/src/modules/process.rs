@@ -13,7 +13,7 @@ fn get_current_exe_path() -> Option<std::path::PathBuf> {
         .and_then(|p| p.canonicalize().ok())
 }
 
-/// Check if Antigravity is running
+/// Check if the companion application is running
 pub fn is_antigravity_running() -> bool {
     let mut system = System::new();
     system.refresh_processes(sysinfo::ProcessesToUpdate::All);
@@ -40,7 +40,7 @@ pub fn is_antigravity_running() -> bool {
             .unwrap_or("")
             .to_lowercase();
 
-        // Exclude own path (handles case where manager is mistaken for Antigravity on Linux)
+        // Exclude own path (handles case where manager is mistaken for the companion app on Linux)
         if let (Some(ref my_path), Some(p_exe)) = (&current_exe, process.exe()) {
             if let Ok(p_path) = p_exe.canonicalize() {
                 if my_path == &p_path {
@@ -190,7 +190,7 @@ fn get_self_family_pids(system: &sysinfo::System) -> std::collections::HashSet<u
     family_pids
 }
 
-/// Get PIDs of all Antigravity processes (including main and helper processes)
+/// Get PIDs of all companion application processes (including main and helper processes)
 fn get_antigravity_pids() -> Vec<u32> {
     let mut system = System::new();
     system.refresh_processes(sysinfo::ProcessesToUpdate::All);
@@ -315,7 +315,7 @@ fn get_antigravity_pids() -> Vec<u32> {
 
         #[cfg(target_os = "macos")]
         {
-            // Match processes within Antigravity main app bundle, excluding Helper/Plugin/Renderer etc.
+            // Match processes within the companion app bundle, excluding Helper/Plugin/Renderer etc.
             if exe_path.contains("antigravity.app") && !is_helper {
                 pids.push(pid_u32);
             }
@@ -343,7 +343,7 @@ fn get_antigravity_pids() -> Vec<u32> {
 
     if !pids.is_empty() {
         crate::modules::logger::log_info(&format!(
-            "Found {} Antigravity processes: {:?}",
+            "Found {} Buddy processes: {:?}",
             pids.len(),
             pids
         ));
@@ -352,9 +352,9 @@ fn get_antigravity_pids() -> Vec<u32> {
     pids
 }
 
-/// Close Antigravity processes
+/// Close companion application processes
 pub fn close_antigravity(#[allow(unused_variables)] timeout_secs: u64) -> Result<(), String> {
-    crate::modules::logger::log_info("Closing Antigravity...");
+    crate::modules::logger::log_info("Closing Buddy...");
 
     #[cfg(target_os = "windows")]
     {
@@ -508,7 +508,7 @@ pub fn close_antigravity(#[allow(unused_variables)] timeout_secs: u64) -> Result
             let start = std::time::Instant::now();
             while start.elapsed() < Duration::from_secs(graceful_timeout) {
                 if !is_antigravity_running() {
-                    crate::modules::logger::log_info("All Antigravity processes gracefully closed");
+                    crate::modules::logger::log_info("All Buddy processes gracefully closed");
                     return Ok(());
                 }
                 thread::sleep(Duration::from_millis(500));
@@ -552,7 +552,7 @@ pub fn close_antigravity(#[allow(unused_variables)] timeout_secs: u64) -> Result
             }
         } else {
             // Only consider not running when pids is empty, don't error here as it might already be closed
-            crate::modules::logger::log_info("Antigravity not running, no need to close");
+            crate::modules::logger::log_info("Buddy is not running, no need to close");
             return Ok(());
         }
     }
@@ -663,7 +663,7 @@ pub fn close_antigravity(#[allow(unused_variables)] timeout_secs: u64) -> Result
             let start = std::time::Instant::now();
             while start.elapsed() < Duration::from_secs(graceful_timeout) {
                 if !is_antigravity_running() {
-                    crate::modules::logger::log_info("Antigravity gracefully closed");
+                    crate::modules::logger::log_info("Buddy gracefully closed");
                     return Ok(());
                 }
                 thread::sleep(Duration::from_millis(500));
@@ -686,24 +686,24 @@ pub fn close_antigravity(#[allow(unused_variables)] timeout_secs: u64) -> Result
         } else {
             // pids is empty, meaning no process detected or all excluded by logic
             crate::modules::logger::log_info(
-                "No Antigravity processes found to close (possibly filtered or not running)",
+                "No Buddy processes found to close (possibly filtered or not running)",
             );
         }
     }
 
     // Final check
     if is_antigravity_running() {
-        return Err("Unable to close Antigravity process, please close manually and retry".to_string());
+        return Err("Unable to close Buddy process, please close manually and retry".to_string());
     }
 
-    crate::modules::logger::log_info("Antigravity closed successfully");
+    crate::modules::logger::log_info("Buddy closed successfully");
     Ok(())
 }
 
-/// Start Antigravity
+/// Start Buddy
 #[allow(unused_mut)]
 pub fn start_antigravity() -> Result<(), String> {
-    crate::modules::logger::log_info("Starting Antigravity...");
+    crate::modules::logger::log_info("Starting Buddy...");
 
     // Prefer manually specified path and args from configuration
     let config = crate::modules::config::load_app_config().ok();
@@ -779,7 +779,7 @@ pub fn start_antigravity() -> Result<(), String> {
             }
 
             crate::modules::logger::log_info(&format!(
-                "Antigravity startup command sent (manual path: {}, args: {:?})",
+                "Buddy startup command sent (manual path: {}, args: {:?})",
                 path_str, args
             ));
             return Ok(());
@@ -840,7 +840,7 @@ pub fn start_antigravity() -> Result<(), String> {
                 
                 cmd.spawn().map_err(|e| format!("Startup failed: {}", e))?;
             } else {
-                return Err("Startup arguments configured but cannot find Antigravity executable path. Please set the executable path manually in Settings.".to_string());
+                return Err("Startup arguments configured but cannot find Buddy executable path. Please set the executable path manually in Settings.".to_string());
             }
         } else {
             use crate::utils::command::CommandExtWrapper;
@@ -850,7 +850,7 @@ pub fn start_antigravity() -> Result<(), String> {
             
             let result = cmd.spawn();
             if result.is_err() {
-                return Err("Startup failed, please open Antigravity manually".to_string());
+                return Err("Startup failed, please open Buddy manually".to_string());
             }
         }
     }
@@ -870,13 +870,13 @@ pub fn start_antigravity() -> Result<(), String> {
     }
 
     crate::modules::logger::log_info(&format!(
-        "Antigravity startup command sent (default detection, args: {:?})",
+        "Buddy startup command sent (default detection, args: {:?})",
         args
     ));
     Ok(())
 }
 
-/// Get Antigravity executable path and startup arguments from running processes
+/// Get companion application executable path and startup arguments from running processes
 ///
 /// This is the most reliable method to find installations and startup args anywhere
 fn get_process_info() -> (Option<std::path::PathBuf>, Option<Vec<String>>) {
@@ -976,7 +976,7 @@ fn get_process_info() -> (Option<std::path::PathBuf>, Option<Vec<String>>) {
     (None, None)
 }
 
-/// Get Antigravity executable path from running processes
+/// Get companion application executable path from running processes
 ///
 /// Most reliable method to find installation anywhere
 pub fn get_path_from_running_process() -> Option<std::path::PathBuf> {
@@ -984,7 +984,7 @@ pub fn get_path_from_running_process() -> Option<std::path::PathBuf> {
     path
 }
 
-/// Get Antigravity startup arguments from running processes
+/// Get companion application startup arguments from running processes
 pub fn get_args_from_running_process() -> Option<Vec<String>> {
     let (_, args) = get_process_info();
     args
@@ -1044,7 +1044,7 @@ pub fn get_user_data_dir_from_process() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Get Antigravity executable path (cross-platform)
+/// Get companion application executable path (cross-platform)
 ///
 /// Search strategy (highest to lowest priority):
 /// 1. Get path from running process (most reliable, supports any location)

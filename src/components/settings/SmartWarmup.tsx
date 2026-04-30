@@ -26,13 +26,8 @@ const SmartWarmup: React.FC<SmartWarmupProps> = ({ config, onChange }) => {
             label: config.shortLabel || config.label
         }));
 
-    const handleEnabledChange = (enabled: boolean) => {
-        let newConfig = { ...config, enabled };
-        // 如果开启预热且勾选列表为空，则默认勾选所有核心模型
-        if (enabled && (!config.monitored_models || config.monitored_models.length === 0)) {
-            newConfig.monitored_models = warmupModelsOptions.map(o => o.id);
-        }
-        onChange(newConfig);
+    const handleEnabledChange = () => {
+        onChange({ ...config, enabled: false });
     };
 
     const toggleModel = (model: string) => {
@@ -65,16 +60,17 @@ const SmartWarmup: React.FC<SmartWarmupProps> = ({ config, onChange }) => {
                             {t('settings.warmup.title', '智能预热')}
                         </div>
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                            {t('settings.warmup.desc')}
+                            {t('settings.warmup.unsupported_desc', 'CodeBuddy warmup is not supported yet. This feature stays off.')}
                         </p>
                     </div>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
+                <label className="relative inline-flex items-center cursor-not-allowed opacity-70">
                     <input
                         type="checkbox"
                         className="sr-only peer"
-                        checked={config.enabled}
-                        onChange={(e) => handleEnabledChange(e.target.checked)}
+                        checked={false}
+                        onChange={handleEnabledChange}
+                        disabled
                     />
                     <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500 shadow-inner"></div>
                 </label>

@@ -26,6 +26,16 @@ pub fn normalize_proxy_url(url: &str) -> String {
 // ============================================================================
 static GLOBAL_THINKING_BUDGET_CONFIG: OnceLock<RwLock<ThinkingBudgetConfig>> = OnceLock::new();
 
+/// Test-only mutex that serializes all tests touching `GLOBAL_THINKING_BUDGET_CONFIG`.
+/// Acquire before calling `update_thinking_budget_config`; hold for the test's lifetime.
+#[cfg(test)]
+pub static TEST_CONFIG_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub fn test_config_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_CONFIG_MUTEX.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap()
+}
+
 /// 获取当前 Thinking Budget 配置
 pub fn get_thinking_budget_config() -> ThinkingBudgetConfig {
     GLOBAL_THINKING_BUDGET_CONFIG
@@ -278,7 +288,7 @@ pub enum CodeBuddyDispatchMode {
 
 impl Default for CodeBuddyDispatchMode {
     fn default() -> Self {
-        Self::Off
+        Self::Exclusive
     }
 }
 
@@ -309,11 +319,11 @@ pub struct CodeBuddyConfig {
 impl Default for CodeBuddyConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             base_url: default_codebuddy_base_url(),
             token: String::new(),
             user_id: String::new(),
-            dispatch_mode: CodeBuddyDispatchMode::Off,
+            dispatch_mode: CodeBuddyDispatchMode::Exclusive,
             model: default_codebuddy_model(),
             current_account_id: None,
         }

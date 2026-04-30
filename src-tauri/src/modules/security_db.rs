@@ -4,6 +4,9 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
+
+static SECURITY_DB_CONNECT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// IP 访问日志
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +76,9 @@ pub fn get_security_db_path() -> Result<PathBuf, String> {
 /// 连接数据库
 fn connect_db() -> Result<Connection, String> {
     let db_path = get_security_db_path()?;
+    let _guard = SECURITY_DB_CONNECT_LOCK
+        .lock()
+        .map_err(|_| "failed_to_lock_security_db_connection".to_string())?;
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
 
     // Enable WAL mode for better concurrency
@@ -528,14 +534,8 @@ fn cidr_match(ip: &str, cidr: &str) -> bool {
         Err(_) => return false,
     };
 
-    let ip_parts: Vec<u8> = ip
-        .split('.')
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    let net_parts: Vec<u8> = network
-        .split('.')
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let ip_parts: Vec<u8> = ip.split('.').filter_map(|s| s.parse().ok()).collect();
+    let net_parts: Vec<u8> = network.split('.').filter_map(|s| s.parse().ok()).collect();
 
     if ip_parts.len() != 4 || net_parts.len() != 4 {
         return false;
@@ -558,7 +558,10 @@ fn cidr_match(ip: &str, cidr: &str) -> bool {
 // ============================================================================
 
 /// 添加 IP 到白名单
-pub fn add_to_whitelist(ip_pattern: &str, description: Option<&str>) -> Result<IpWhitelistEntry, String> {
+pub fn add_to_whitelist(
+    ip_pattern: &str,
+    description: Option<&str>,
+) -> Result<IpWhitelistEntry, String> {
     let conn = connect_db()?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -658,7 +661,10 @@ pub fn clear_ip_access_logs() -> Result<(), String> {
 }
 
 /// 获取 IP 访问日志总数
-pub fn get_ip_access_logs_count(ip_filter: Option<&str>, blocked_only: bool) -> Result<u64, String> {
+pub fn get_ip_access_logs_count(
+    ip_filter: Option<&str>,
+    blocked_only: bool,
+) -> Result<u64, String> {
     let conn = connect_db()?;
 
     let sql = if blocked_only {

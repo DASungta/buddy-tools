@@ -1,3 +1,9 @@
+export interface CodebuddyCnModelInfo {
+  id: string;
+  display_name?: string | null;
+  source: string;
+}
+
 export interface CodebuddyCnAccount {
   id: string;
   email: string;
@@ -5,6 +11,9 @@ export interface CodebuddyCnAccount {
   nickname?: string | null;
   enterprise_id?: string | null;
   enterprise_name?: string | null;
+  account_scope?: 'personal' | 'enterprise' | string | null;
+  account_context_id?: string | null;
+  account_context_raw?: unknown;
   tags?: string[] | null;
 
   access_token: string;

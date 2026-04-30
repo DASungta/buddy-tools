@@ -30,6 +30,9 @@ export interface CodebuddyAccount {
   nickname?: string | null;
   enterprise_id?: string | null;
   enterprise_name?: string | null;
+  account_scope?: 'personal' | 'enterprise' | string | null;
+  account_context_id?: string | null;
+  account_context_raw?: unknown;
   tags?: string[] | null;
 
   access_token: string;
@@ -67,6 +70,11 @@ export interface CodebuddyAccountSummary {
   tags?: string[] | null;
   plan_type?: string;
   status?: string | null;
+  enterprise_id?: string | null;
+  enterprise_name?: string | null;
+  account_scope?: 'personal' | 'enterprise' | string | null;
+  account_context_id?: string | null;
+  account_context_raw?: unknown;
   payment_type?: string | null;
   quota_raw?: unknown;
   usage_raw?: unknown;

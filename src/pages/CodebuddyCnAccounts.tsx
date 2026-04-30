@@ -26,6 +26,40 @@ function PlanBadge({ planType }: { planType?: string }) {
   );
 }
 
+function getAccountScope(account: CodebuddyCnAccount): 'personal' | 'enterprise' {
+  const explicit = account.account_scope?.toLowerCase();
+  if (explicit === 'enterprise') return 'enterprise';
+  if (explicit === 'personal') return 'personal';
+  if (account.enterprise_id || account.enterprise_name) return 'enterprise';
+  const plan = account.plan_type?.toLowerCase() ?? '';
+  if (
+    plan.includes('enterprise') ||
+    plan.includes('ultimate') ||
+    plan.includes('exclusive') ||
+    plan.includes('premise')
+  ) {
+    return 'enterprise';
+  }
+  return 'personal';
+}
+
+function AccountScopeBadge({ account }: { account: CodebuddyCnAccount }) {
+  const { t } = useTranslation();
+  const scope = getAccountScope(account);
+  const title = scope === 'enterprise' ? account.enterprise_name || account.enterprise_id || undefined : undefined;
+  const cls = scope === 'enterprise'
+    ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+    : 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300';
+
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide ${cls}`} title={title}>
+      {scope === 'enterprise'
+        ? t('codebuddy.accounts.scope.enterprise', '企业版')
+        : t('codebuddy.accounts.scope.personal', '个人版')}
+    </span>
+  );
+}
+
 interface AccountCardProps {
   account: CodebuddyCnAccount;
   isCurrent: boolean;
@@ -63,7 +97,7 @@ function AccountCard({
     ? new Date(account.last_checkin_time * 1000).toLocaleDateString()
     : null;
 
-  const groups = (account.quota_raw || account.usage_raw) ? getCodebuddyUsage(account as any) : [];
+  const groups = getCodebuddyUsage(account as any);
 
   return (
     <div
@@ -88,6 +122,7 @@ function AccountCard({
                 {displayName}
               </span>
               <PlanBadge planType={account.plan_type} />
+              <AccountScopeBadge account={account} />
               {isCurrent && (
                 <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
                   <CheckCircle size={10} />
@@ -98,6 +133,11 @@ function AccountCard({
             {account.nickname && account.nickname !== displayName && (
               <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
                 {account.nickname}
+              </div>
+            )}
+            {account.enterprise_name && (
+              <div className="text-[11px] text-purple-500 dark:text-purple-300 truncate" title={account.enterprise_id || account.enterprise_name}>
+                {t('codebuddy.accounts.enterpriseName', '企业：{{name}}', { name: account.enterprise_name })}
               </div>
             )}
             <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
@@ -120,11 +160,14 @@ function AccountCard({
       )}
 
       {/* Quota */}
-      {groups.length > 0 && (
-        <div className="mb-3">
-          <CodeBuddyQuotaCategoryList groups={groups} />
-        </div>
-      )}
+      <div className="mb-3">
+        {account.quota_query_last_error && (
+          <div className="mb-2 px-2 py-1 rounded bg-yellow-50 dark:bg-yellow-900/20 text-[11px] text-yellow-700 dark:text-yellow-300 border border-yellow-200 dark:border-yellow-800">
+            {account.quota_query_last_error}
+          </div>
+        )}
+        <CodeBuddyQuotaCategoryList groups={groups} />
+      </div>
 
       {/* Actions */}
       <div className="flex gap-2 mt-2">

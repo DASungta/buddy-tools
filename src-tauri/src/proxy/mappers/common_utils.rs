@@ -345,12 +345,18 @@ pub fn inject_google_search_tool(body: &mut Value, mapped_model: Option<&str>) {
                     .map_or(false, |o| o.contains_key("functionDeclarations"))
             });
 
-            // [FIX] v1internal (cloudcode-pa) does NOT support mixing googleSearch
-            // with functionDeclarations — it lacks includeServerSideToolInvocations.
-            // Skip googleSearch injection entirely when function tools are present.
-            if has_functions {
+            let supports_mixed_tools = mapped_model
+                .map(|m| {
+                    let lower = m.to_lowercase();
+                    lower.starts_with("gemini-2.")
+                        || lower.starts_with("gemini-3-")
+                        || lower.starts_with("gemini-3.")
+                })
+                .unwrap_or(false);
+
+            if has_functions && !supports_mixed_tools {
                 tracing::debug!(
-                    "Skipping googleSearch injection: functionDeclarations present (v1internal incompatible)"
+                    "Skipping googleSearch injection: functionDeclarations present (model does not support mixed tools)"
                 );
                 return;
             }

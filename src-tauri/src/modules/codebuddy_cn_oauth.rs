@@ -22,6 +22,117 @@ fn build_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
 }
 
+struct CodebuddyCnRequestContext<'a> {
+    access_token: &'a str,
+    uid: Option<&'a str>,
+    enterprise_id: Option<&'a str>,
+    domain: Option<&'a str>,
+}
+
+fn request_context<'a>(
+    access_token: &'a str,
+    uid: Option<&'a str>,
+    enterprise_id: Option<&'a str>,
+    domain: Option<&'a str>,
+) -> CodebuddyCnRequestContext<'a> {
+    CodebuddyCnRequestContext {
+        access_token,
+        uid,
+        enterprise_id,
+        domain,
+    }
+}
+
+fn apply_codebuddy_headers(
+    req: reqwest::RequestBuilder,
+    ctx: &CodebuddyCnRequestContext<'_>,
+) -> reqwest::RequestBuilder {
+    let mut req = req.header("Authorization", format!("Bearer {}", ctx.access_token));
+    if let Some(uid) = ctx.uid {
+        req = req.header("X-User-Id", uid);
+    }
+    if let Some(eid) = ctx.enterprise_id {
+        req = req.header("X-Enterprise-Id", eid);
+        req = req.header("X-Tenant-Id", eid);
+    }
+    if let Some(domain) = ctx.domain {
+        req = req.header("X-Domain", domain);
+    }
+    req
+}
+
+fn derive_account_scope(
+    enterprise_id: Option<&str>,
+    enterprise_name: Option<&str>,
+    plan_type: Option<&str>,
+) -> String {
+    let has_enterprise = enterprise_id
+        .or(enterprise_name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let has_enterprise_plan = plan_type
+        .map(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("enterprise")
+                || lower.contains("ultimate")
+                || lower.contains("exclusive")
+                || lower.contains("premise")
+        })
+        .unwrap_or(false);
+
+    if has_enterprise || has_enterprise_plan {
+        "enterprise".to_string()
+    } else {
+        "personal".to_string()
+    }
+}
+
+fn normalize_context_part(value: Option<&str>, fallback: &str) -> String {
+    value
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn derive_account_context_id(
+    uid: Option<&str>,
+    email: Option<&str>,
+    enterprise_id: Option<&str>,
+    enterprise_name: Option<&str>,
+    account_scope: &str,
+) -> String {
+    let identity = normalize_context_part(uid.or(email), "codebuddy_cn_user");
+    if account_scope == "enterprise" {
+        let enterprise = normalize_context_part(enterprise_id.or(enterprise_name), "enterprise");
+        format!("enterprise:{}:{}", enterprise, identity)
+    } else {
+        format!("personal:{}", identity)
+    }
+}
+
+fn response_message(body: &Value) -> &str {
+    body.get("message")
+        .or_else(|| body.get("msg"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown error")
+}
+
+fn response_code(body: &Value) -> Option<i64> {
+    body.get("code").and_then(Value::as_i64)
+}
+
+fn is_success_code(code: i64) -> bool {
+    code == 0 || code == 200
+}
+
+fn wrap_user_resource_quota(body: Value) -> Value {
+    if body.get("userResource").is_some() {
+        body
+    } else {
+        json!({ "userResource": body })
+    }
+}
+
 fn normalize_product_code(value: Option<&str>) -> String {
     value
         .map(|v| v.trim())
@@ -61,6 +172,8 @@ async fn fetch_account_info(
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<String>,
         Option<Value>,
     ),
     String,
@@ -70,23 +183,34 @@ async fn fetch_account_info(
         CODEBUDDY_CN_API_ENDPOINT, CODEBUDDY_CN_API_PREFIX, state
     );
 
-    let mut req = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access_token));
-
-    if let Some(d) = domain {
-        req = req.header("X-Domain", d);
-    }
-
-    let resp = req
+    let ctx = request_context(access_token, None, None, domain);
+    let resp = apply_codebuddy_headers(client.get(&url), &ctx)
         .send()
         .await
         .map_err(|e| format!("请求 login/account 失败: {}", e))?;
 
+    let status_code = resp.status();
     let body: Value = resp
         .json()
         .await
         .map_err(|e| format!("解析 login/account 响应失败: {}", e))?;
+
+    if !status_code.is_success() {
+        return Err(format!(
+            "请求 login/account 失败 (http={}): {}",
+            status_code.as_u16(),
+            response_message(&body)
+        ));
+    }
+    if let Some(code) = response_code(&body) {
+        if !is_success_code(code) {
+            return Err(format!(
+                "请求 login/account 失败 (code={}): {}",
+                code,
+                response_message(&body)
+            ));
+        }
+    }
 
     let data = body.get("data").cloned().unwrap_or(json!({}));
 
@@ -118,7 +242,33 @@ async fn fetch_account_info(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    Ok((uid, nickname, email, enterprise_id, enterprise_name, Some(data)))
+    let plan_type = data
+        .get("planType")
+        .or_else(|| data.get("plan_type"))
+        .and_then(|v| v.as_str());
+    let account_scope = derive_account_scope(
+        enterprise_id.as_deref(),
+        enterprise_name.as_deref(),
+        plan_type,
+    );
+    let account_context_id = derive_account_context_id(
+        uid.as_deref(),
+        Some(email.as_str()),
+        enterprise_id.as_deref(),
+        enterprise_name.as_deref(),
+        &account_scope,
+    );
+
+    Ok((
+        uid,
+        nickname,
+        email,
+        enterprise_id,
+        enterprise_name,
+        Some(account_scope),
+        Some(account_context_id),
+        Some(data),
+    ))
 }
 
 async fn fetch_quota_info(
@@ -137,29 +287,63 @@ async fn fetch_quota_info(
     let status = normalize_user_resource_status(&[0, 3]);
     let product_code = normalize_product_code(None);
 
-    let mut req = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .json(&json!({
+    let ctx = request_context(access_token, uid, enterprise_id, domain);
+    let req = apply_codebuddy_headers(
+        client.post(&url).json(&json!({
             "status": status,
             "productCode": product_code,
             "beginTime": begin,
             "endTime": end,
-        }));
+        })),
+        &ctx,
+    );
 
-    if let Some(u) = uid {
-        req = req.header("X-User-Id", u);
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            warn!(
+                "[CodeBuddy CN OAuth] user-resource 请求失败: endpoint={}, error={}",
+                url, err
+            );
+            return None;
+        }
+    };
+    let status_code = resp.status();
+    match resp.json::<Value>().await {
+        Ok(body) => {
+            if !status_code.is_success() {
+                warn!(
+                    "[CodeBuddy CN OAuth] user-resource 请求失败: endpoint={}, http={}, error={}",
+                    url,
+                    status_code.as_u16(),
+                    response_message(&body)
+                );
+                return None;
+            }
+            if let Some(code) = response_code(&body) {
+                if !is_success_code(code) {
+                    warn!(
+                        "[CodeBuddy CN OAuth] user-resource 请求失败: endpoint={}, http={}, code={}, error={}",
+                        url,
+                        status_code.as_u16(),
+                        code,
+                        response_message(&body)
+                    );
+                    return None;
+                }
+            }
+            Some(wrap_user_resource_quota(body))
+        }
+        Err(err) => {
+            warn!(
+                "[CodeBuddy CN OAuth] user-resource 解析失败: endpoint={}, http={}, error={}",
+                url,
+                status_code.as_u16(),
+                err
+            );
+            None
+        }
     }
-    if let Some(eid) = enterprise_id {
-        req = req.header("X-Enterprise-Id", eid);
-        req = req.header("X-Tenant-Id", eid);
-    }
-    if let Some(d) = domain {
-        req = req.header("X-Domain", d);
-    }
-
-    let resp = req.send().await.ok()?;
-    resp.json::<Value>().await.ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -262,10 +446,7 @@ pub async fn start_login() -> Result<CodebuddyOAuthStartResponse, String> {
         });
     }
 
-    info!(
-        "[CodeBuddy CN OAuth] 登录已启动: login_id={}",
-        login_id
-    );
+    info!("[CodeBuddy CN OAuth] 登录已启动: login_id={}", login_id);
 
     Ok(CodebuddyOAuthStartResponse {
         login_id,
@@ -283,7 +464,8 @@ pub async fn complete_login(login_id: &str) -> Result<CodebuddyOAuthCompletePayl
         let pending = PENDING_OAUTH_STATE_CN
             .lock()
             .map_err(|_| "内部锁错误".to_string())?;
-        pending.as_ref()
+        pending
+            .as_ref()
             .filter(|s| s.login_id == login_id)
             .map(|s| s.state.clone())
             .ok_or_else(|| "无效的 OAuth 登录状态".to_string())?
@@ -363,8 +545,16 @@ pub async fn complete_login(login_id: &str) -> Result<CodebuddyOAuthCompletePayl
                 .and_then(|v| v.as_str())
                 .unwrap_or(&poll_state);
 
-            let (uid, nickname, email, enterprise_id, enterprise_name, _account_raw) =
-                fetch_account_info(&client, &access_token, state_val, domain.as_deref()).await?;
+            let (
+                uid,
+                nickname,
+                email,
+                enterprise_id,
+                enterprise_name,
+                account_scope,
+                account_context_id,
+                account_raw,
+            ) = fetch_account_info(&client, &access_token, state_val, domain.as_deref()).await?;
 
             let quota_raw = fetch_quota_info(
                 &client,
@@ -375,10 +565,7 @@ pub async fn complete_login(login_id: &str) -> Result<CodebuddyOAuthCompletePayl
             )
             .await;
 
-            info!(
-                "[CodeBuddy CN OAuth] 登录成功: email={}",
-                email
-            );
+            info!("[CodeBuddy CN OAuth] 登录成功: email={}", email);
 
             return Ok(CodebuddyOAuthCompletePayload {
                 email,
@@ -386,6 +573,9 @@ pub async fn complete_login(login_id: &str) -> Result<CodebuddyOAuthCompletePayl
                 nickname,
                 enterprise_id,
                 enterprise_name,
+                account_scope,
+                account_context_id,
+                account_context_raw: account_raw.clone(),
                 access_token,
                 refresh_token: refresh_token_val,
                 token_type: Some("Bearer".to_string()),
@@ -398,7 +588,7 @@ pub async fn complete_login(login_id: &str) -> Result<CodebuddyOAuthCompletePayl
                 payment_type: None,
                 quota_raw,
                 auth_raw: None,
-                profile_raw: None,
+                profile_raw: account_raw,
                 usage_raw: None,
                 status: Some("normal".to_string()),
                 status_reason: None,
@@ -409,11 +599,21 @@ pub async fn complete_login(login_id: &str) -> Result<CodebuddyOAuthCompletePayl
     }
 }
 
-pub async fn build_payload_from_token(access_token: &str) -> Result<CodebuddyOAuthCompletePayload, String> {
+pub async fn build_payload_from_token(
+    access_token: &str,
+) -> Result<CodebuddyOAuthCompletePayload, String> {
     let client = build_client()?;
     let dummy_state = "";
-    let (uid, nickname, email, enterprise_id, enterprise_name, _) =
-        fetch_account_info(&client, access_token, dummy_state, None).await?;
+    let (
+        uid,
+        nickname,
+        email,
+        enterprise_id,
+        enterprise_name,
+        account_scope,
+        account_context_id,
+        account_raw,
+    ) = fetch_account_info(&client, access_token, dummy_state, None).await?;
 
     let quota_raw = fetch_quota_info(
         &client,
@@ -430,6 +630,9 @@ pub async fn build_payload_from_token(access_token: &str) -> Result<CodebuddyOAu
         nickname,
         enterprise_id,
         enterprise_name,
+        account_scope,
+        account_context_id,
+        account_context_raw: account_raw.clone(),
         access_token: access_token.to_string(),
         refresh_token: None,
         token_type: Some("Bearer".to_string()),
@@ -442,7 +645,7 @@ pub async fn build_payload_from_token(access_token: &str) -> Result<CodebuddyOAu
         payment_type: None,
         quota_raw,
         auth_raw: None,
-        profile_raw: None,
+        profile_raw: account_raw,
         usage_raw: None,
         status: Some("normal".to_string()),
         status_reason: None,
@@ -460,29 +663,22 @@ pub async fn get_checkin_status(
     domain: Option<&str>,
 ) -> Result<CheckinStatusResponse, String> {
     let client = build_client()?;
-    let url = format!("{}/v2/billing/meter/checkin-status", CODEBUDDY_CN_API_ENDPOINT);
+    let url = format!(
+        "{}/v2/billing/meter/checkin-status",
+        CODEBUDDY_CN_API_ENDPOINT
+    );
 
-    let mut req = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .header("Content-Type", "application/json")
-        .json(&json!({}));
-
-    if let Some(u) = uid {
-        req = req.header("X-User-Id", u);
-    }
-    if let Some(eid) = enterprise_id {
-        req = req.header("X-Enterprise-Id", eid);
-        req = req.header("X-Tenant-Id", eid);
-    }
-    if let Some(d) = domain {
-        req = req.header("X-Domain", d);
-    }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("请求 checkin-status 失败: {}", e))?;
+    let ctx = request_context(access_token, uid, enterprise_id, domain);
+    let resp = apply_codebuddy_headers(
+        client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&json!({})),
+        &ctx,
+    )
+    .send()
+    .await
+    .map_err(|e| format!("请求 checkin-status 失败: {}", e))?;
 
     let status_code = resp.status();
     let body: Value = resp
@@ -533,29 +729,22 @@ pub async fn perform_checkin(
     domain: Option<&str>,
 ) -> Result<CheckinResponse, String> {
     let client = build_client()?;
-    let url = format!("{}/v2/billing/meter/daily-checkin", CODEBUDDY_CN_API_ENDPOINT);
+    let url = format!(
+        "{}/v2/billing/meter/daily-checkin",
+        CODEBUDDY_CN_API_ENDPOINT
+    );
 
-    let mut req = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .header("Content-Type", "application/json")
-        .json(&json!({}));
-
-    if let Some(u) = uid {
-        req = req.header("X-User-Id", u);
-    }
-    if let Some(eid) = enterprise_id {
-        req = req.header("X-Enterprise-Id", eid);
-        req = req.header("X-Tenant-Id", eid);
-    }
-    if let Some(d) = domain {
-        req = req.header("X-Domain", d);
-    }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("请求 daily-checkin 失败: {}", e))?;
+    let ctx = request_context(access_token, uid, enterprise_id, domain);
+    let resp = apply_codebuddy_headers(
+        client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&json!({})),
+        &ctx,
+    )
+    .send()
+    .await
+    .map_err(|e| format!("请求 daily-checkin 失败: {}", e))?;
 
     let status_code = resp.status();
     let body: Value = resp
@@ -592,7 +781,10 @@ pub async fn perform_checkin(
     }
 
     let data = body.get("data").cloned().unwrap_or(json!({}));
-    let reward = data.get("reward").cloned().or_else(|| body.get("data").cloned());
+    let reward = data
+        .get("reward")
+        .cloned()
+        .or_else(|| body.get("data").cloned());
 
     Ok(CheckinResponse {
         success: true,

@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::proxy::ProxyConfig;
 use crate::modules::cloudflared::CloudflaredConfig;
+use crate::proxy::ProxyConfig;
+use serde::{Deserialize, Serialize};
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8,16 +8,16 @@ pub struct AppConfig {
     pub language: String,
     pub theme: String,
     pub auto_refresh: bool,
-    pub refresh_interval: i32,  // minutes
+    pub refresh_interval: i32, // minutes
     pub auto_sync: bool,
-    pub sync_interval: i32,  // minutes
+    pub sync_interval: i32, // minutes
     pub default_export_path: Option<String>,
     #[serde(default)]
     pub proxy: ProxyConfig,
-    pub antigravity_executable: Option<String>, // [NEW] Manually specified Antigravity executable path
-    pub antigravity_args: Option<Vec<String>>, // [NEW] Antigravity startup arguments
+    pub antigravity_executable: Option<String>,
+    pub antigravity_args: Option<Vec<String>>,
     #[serde(default)]
-    pub auto_launch: bool,  // Launch on startup
+    pub auto_launch: bool, // Launch on startup
     #[serde(default)]
     pub scheduled_warmup: ScheduledWarmupConfig, // [NEW] Scheduled warmup configuration
     #[serde(default)]
@@ -47,10 +47,10 @@ pub struct ScheduledWarmupConfig {
 
 fn default_warmup_models() -> Vec<String> {
     vec![
-        "gemini-3-flash".to_string(),
-        "claude".to_string(),
-        "gemini-3-pro-high".to_string(),
-        "gemini-3-pro-image".to_string(),
+        "auto".to_string(),
+        "glm-5.1".to_string(),
+        "kimi-k2.6".to_string(),
+        "deepseek-v3.2".to_string(),
     ]
 }
 
@@ -74,21 +74,21 @@ impl Default for ScheduledWarmupConfig {
 pub struct QuotaProtectionConfig {
     /// Whether quota protection is enabled
     pub enabled: bool,
-    
+
     /// Reserved quota percentage (1-99)
     pub threshold_percentage: u32,
 
-    /// List of monitored models (e.g. gemini-3-flash, gemini-3-pro-high, gemini-3.1-pro-high, claude-sonnet-4-6)
+    /// List of monitored CodeBuddy CN models.
     #[serde(default = "default_monitored_models")]
     pub monitored_models: Vec<String>,
 }
 
 fn default_monitored_models() -> Vec<String> {
     vec![
-        "claude".to_string(),
-        "gemini-3-pro-high".to_string(),
-        "gemini-3-flash".to_string(),
-        "gemini-3-pro-image".to_string(),
+        "auto".to_string(),
+        "glm-5.1".to_string(),
+        "kimi-k2.6".to_string(),
+        "deepseek-v3.2".to_string(),
     ]
 }
 
@@ -118,10 +118,11 @@ pub struct PinnedQuotaModelsConfig {
 
 fn default_pinned_models() -> Vec<String> {
     vec![
-        "gemini-3-pro-high".to_string(),
-        "gemini-3-flash".to_string(),
-        "gemini-3-pro-image".to_string(),
-        "claude-sonnet-4-6-thinking".to_string(),
+        "auto".to_string(),
+        "glm-5v-turbo".to_string(),
+        "glm-5.1".to_string(),
+        "kimi-k2.6".to_string(),
+        "deepseek-v3.2".to_string(),
     ]
 }
 

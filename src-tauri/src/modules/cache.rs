@@ -1,6 +1,6 @@
-//! Antigravity cache clearing module
+//! Application cache clearing module
 //!
-//! Provides functionality to clear Antigravity application cache directories
+//! Provides functionality to clear application cache directories
 //! to resolve login failures, version validation errors, and OAuth issues.
 
 use crate::modules::logger;
@@ -19,7 +19,7 @@ pub struct ClearResult {
     pub errors: Vec<String>,
 }
 
-/// Get all known Antigravity cache paths for the current platform
+/// Get all known application cache paths for the current platform
 pub fn get_antigravity_cache_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -126,7 +126,7 @@ fn clear_directory(path: &PathBuf) -> Result<u64, String> {
     Ok(size)
 }
 
-/// Clear Antigravity application cache
+/// Clear application cache
 ///
 /// # Arguments
 /// * `custom_paths` - Optional custom paths to clear. If None, uses default platform paths.
@@ -140,7 +140,7 @@ pub fn clear_antigravity_cache(custom_paths: Option<Vec<String>>) -> Result<Clea
     };
 
     logger::log_info(&format!(
-        "Starting Antigravity cache clearing, {} potential paths",
+        "Starting application cache clearing, {} potential paths",
         paths.len()
     ));
 
@@ -177,7 +177,7 @@ pub fn clear_antigravity_cache(custom_paths: Option<Vec<String>>) -> Result<Clea
 
     let total_mb = result.total_size_freed as f64 / 1024.0 / 1024.0;
     logger::log_info(&format!(
-        "Antigravity cache clearing completed: {} paths cleared, {:.2} MB freed, {} errors",
+        "Application cache clearing completed: {} paths cleared, {:.2} MB freed, {} errors",
         result.cleared_paths.len(),
         total_mb,
         result.errors.len()

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Github, User, MessageCircle, ExternalLink, RefreshCw, LayoutDashboard, Users, Network, Activity, BarChart3, Settings as SettingsIcon, Lock, CheckCircle2, Globe, Send } from 'lucide-react';
+import { Save, User, MessageCircle, ExternalLink, RefreshCw, LayoutDashboard, Users, Network, Activity, BarChart3, Settings as SettingsIcon, Lock, CheckCircle2, Globe } from 'lucide-react';
 import { request as invoke } from '../utils/request';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useConfigStore } from '../stores/useConfigStore';
@@ -65,7 +65,7 @@ function Settings() {
             monitored_models: []
         },
         pinned_quota_models: {
-            models: ['gemini-3-pro-high', 'gemini-3-flash', 'gemini-3-pro-image', 'claude-opus-4-6-thinking']
+            models: ['auto', 'hy3-preview', 'glm-5.1', 'kimi-k2.6']
         },
         cloudflared: {
             enabled: false,
@@ -84,12 +84,7 @@ function Settings() {
     // Dialog state
     // Dialog state
     const [isClearLogsOpen, setIsClearLogsOpen] = useState(false);
-    const [dataDirPath, setDataDirPath] = useState<string>('~/.antigravity_tools/');
-
-    // Antigravity cache clearing state
-    const [isClearCacheOpen, setIsClearCacheOpen] = useState(false);
-    const [cachePaths, setCachePaths] = useState<string[]>([]);
-    const [isClearingCache, setIsClearingCache] = useState(false);
+    const [dataDirPath, setDataDirPath] = useState<string>('~/.buddy_tools/');
 
     // Update check state
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -207,21 +202,6 @@ function Settings() {
         }
     };
 
-    const handleSelectAntigravityPath = async () => {
-        try {
-            const selected = await open({
-                directory: false,
-                multiple: false,
-                title: t('settings.advanced.antigravity_path_select'),
-            });
-            if (selected && typeof selected === 'string') {
-                setFormData({ ...formData, antigravity_executable: selected });
-            }
-        } catch (error) {
-            showToast(`${t('common.error')}: ${error}`, 'error');
-        }
-    };
-
     const handleSelectDebugLogDir = async () => {
         try {
             const selected = await open({
@@ -241,17 +221,6 @@ function Settings() {
                     },
                 });
             }
-        } catch (error) {
-            showToast(`${t('common.error')}: ${error}`, 'error');
-        }
-    };
-
-    const handleDetectAntigravityPath = async () => {
-        try {
-            const command = isTauri() ? 'get_antigravity_path' : 'get_antigravity_path'; // 后端已统一
-            const path = await invoke<string>(command, { bypassConfig: true });
-            setFormData({ ...formData, antigravity_executable: path });
-            showToast(t('settings.advanced.antigravity_path_detected'), 'success');
         } catch (error) {
             showToast(`${t('common.error')}: ${error}`, 'error');
         }
@@ -303,46 +272,6 @@ function Settings() {
             showToast(errMsg, 'error');
         } finally {
             setIsBrewUpgrading(false);
-        }
-    };
-
-    // Handle opening cache clear dialog
-    const handleOpenClearCacheDialog = async () => {
-        try {
-            const paths = await invoke<string[]>('get_antigravity_cache_paths');
-            setCachePaths(paths);
-            setIsClearCacheOpen(true);
-        } catch (error) {
-            // If no cache paths found, still allow opening the dialog
-            setCachePaths([]);
-            setIsClearCacheOpen(true);
-        }
-    };
-
-    // Handle clearing Antigravity cache
-    const confirmClearAntigravityCache = async () => {
-        setIsClearingCache(true);
-        try {
-            const result = await invoke<{
-                cleared_paths: string[];
-                total_size_freed: number;
-                errors: string[];
-            }>('clear_antigravity_cache');
-
-            const sizeMB = (result.total_size_freed / 1024 / 1024).toFixed(2);
-
-            if (result.cleared_paths.length > 0) {
-                showToast(t('settings.advanced.cache_cleared_success', { size: sizeMB }), 'success');
-            } else if (result.errors.length > 0) {
-                showToast(`${t('common.error')}: ${result.errors[0]}`, 'error');
-            } else {
-                showToast(t('settings.advanced.cache_not_found'), 'info');
-            }
-        } catch (error) {
-            showToast(`${t('common.error')}: ${error}`, 'error');
-        } finally {
-            setIsClearingCache(false);
-            setIsClearCacheOpen(false);
         }
     };
 
@@ -877,87 +806,6 @@ function Settings() {
                                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{t('settings.advanced.data_dir_desc')}</p>
                                 </div>
 
-                                {/* 反重力程序路径 */}
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
-                                        {t('settings.advanced.antigravity_path')}
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="text"
-                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
-                                            value={formData.antigravity_executable || ''}
-                                            placeholder={t('settings.advanced.antigravity_path_placeholder')}
-                                            onChange={(e) => setFormData({ ...formData, antigravity_executable: e.target.value })}
-                                        />
-                                        {formData.antigravity_executable && (
-                                            <button
-                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
-                                                onClick={() => setFormData({ ...formData, antigravity_executable: undefined })}
-                                            >
-                                                {t('common.clear')}
-                                            </button>
-                                        )}
-                                        <button
-                                            className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
-                                            onClick={handleDetectAntigravityPath}
-                                        >
-                                            {t('settings.advanced.detect_btn')}
-                                        </button>
-                                        {isTauri() ? (
-                                            <button
-                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
-                                                onClick={handleSelectAntigravityPath}
-                                            >
-                                                {t('settings.advanced.select_btn')}
-                                            </button>
-                                        ) : (
-                                            <span className="self-center text-xs text-gray-400 dark:text-gray-500 italic px-2">
-                                                {t('settings.web_mode_limitation', '(Web 模式不支持)')}
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                                        {t('settings.advanced.antigravity_path_desc')}
-                                    </p>
-                                </div>
-
-                                {/* 反重力程序启动参数 */}
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
-                                        {t('settings.advanced.antigravity_args')}
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="text"
-                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
-                                            value={formData.antigravity_args ? formData.antigravity_args.join(' ') : ''}
-                                            placeholder={t('settings.advanced.antigravity_args_placeholder')}
-                                            onChange={(e) => {
-                                                const args = e.target.value.trim() === '' ? [] : e.target.value.split(' ').map(arg => arg.trim()).filter(arg => arg !== '');
-                                                setFormData({ ...formData, antigravity_args: args });
-                                            }}
-                                        />
-                                        <button
-                                            className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-base-200 transition-colors"
-                                            onClick={async () => {
-                                                try {
-                                                    const args = await invoke<string[]>('get_antigravity_args');
-                                                    setFormData({ ...formData, antigravity_args: args });
-                                                    showToast(t('settings.advanced.antigravity_args_detected'), 'success');
-                                                } catch (error) {
-                                                    showToast(`${t('settings.advanced.antigravity_args_detect_error')}: ${error}`, 'error');
-                                                }
-                                            }}
-                                        >
-                                            {t('settings.advanced.detect_args_btn')}
-                                        </button>
-                                    </div>
-                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                                        {t('settings.advanced.antigravity_args_desc')}
-                                    </p>
-                                </div>
-
                                 {/* 日志缓存清理 */}
                                 <div className="border-t border-gray-200 dark:border-base-200 pt-4">
                                     <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.advanced.logs_title')}</h3>
@@ -973,27 +821,6 @@ function Settings() {
                                         </button>
                                     </div>
                                 </div>
-
-                                {/* Antigravity 缓存清理 */}
-                                <div className="border-t border-gray-200 dark:border-base-200 pt-4">
-                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.advanced.antigravity_cache_title')}</h3>
-                                    <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3 mb-3">
-                                        <p className="text-sm text-amber-700 dark:text-amber-400">{t('settings.advanced.antigravity_cache_warning')}</p>
-                                    </div>
-                                    <div className="bg-gray-50 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-lg p-3 mb-3">
-                                        <p className="text-sm text-gray-600 dark:text-gray-400">{t('settings.advanced.antigravity_cache_desc')}</p>
-                                    </div>
-                                    <div className="flex items-center gap-4">
-                                        <button
-                                            className="px-4 py-2 border border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-400 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-colors"
-                                            onClick={handleOpenClearCacheDialog}
-                                        >
-                                            {t('settings.advanced.clear_antigravity_cache')}
-                                        </button>
-                                    </div>
-                                </div>
-
-
 
                                 <div className="border-t border-gray-200 dark:border-base-200 pt-4">
                                     <div className="space-y-3">
@@ -1244,13 +1071,13 @@ function Settings() {
                                         <div className="absolute inset-0 bg-blue-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
                                         <img
                                             src="/icon.png"
-                                            alt="Antigravity Logo"
+                                            alt="Buddy Tools Logo"
                                             className="relative w-24 h-24 rounded-3xl shadow-2xl transform group-hover:scale-105 transition-all duration-500 rotate-3 group-hover:rotate-6 object-cover bg-white dark:bg-black"
                                         />
                                     </div>
 
                                     <div>
-                                        <h3 className="text-3xl font-black text-gray-900 dark:text-base-content tracking-tight mb-2">{t('common.app_name', 'Antigravity Tools')}</h3>
+                                        <h3 className="text-3xl font-black text-gray-900 dark:text-base-content tracking-tight mb-2">{t('common.app_name', 'Buddy Tools')}</h3>
                                         <div className="flex items-center justify-center gap-2 text-sm">
                                             v4.1.32
                                             <span className="text-gray-400 dark:text-gray-600">•</span>
@@ -1282,41 +1109,6 @@ function Settings() {
                                             <div className="font-bold text-gray-900 dark:text-base-content">Ctrler</div>
                                         </div>
                                     </div>
-
-                                    {/* Telegram Card */}
-                                    <a
-                                        href="https://t.me/AntigravityManager"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="bg-white dark:bg-base-100 p-4 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-sky-200 dark:hover:border-sky-800 transition-all group flex flex-col items-center text-center gap-3 cursor-pointer"
-                                    >
-                                        <div className="p-3 bg-sky-50 dark:bg-sky-900/20 rounded-xl group-hover:scale-110 transition-transform duration-300">
-                                            <Send className="w-6 h-6 text-sky-500" />
-                                        </div>
-                                        <div>
-                                            <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">{t('settings.about.telegram')}</div>
-                                            <div className="font-bold text-gray-900 dark:text-base-content whitespace-nowrap overflow-hidden text-ellipsis w-full">Channel</div>
-                                        </div>
-                                    </a>
-
-                                    {/* GitHub Card */}
-                                    <a
-                                        href="https://github.com/lbjlaq/Antigravity-Manager"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="bg-white dark:bg-base-100 p-4 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 transition-all group flex flex-col items-center text-center gap-3 cursor-pointer"
-                                    >
-                                        <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-xl group-hover:scale-110 transition-transform duration-300">
-                                            <Github className="w-6 h-6 text-gray-900 dark:text-white" />
-                                        </div>
-                                        <div>
-                                            <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">{t('settings.about.github')}</div>
-                                            <div className="flex items-center gap-1 font-bold text-gray-900 dark:text-base-content">
-                                                <span>{t('settings.about.view_code')}</span>
-                                                <ExternalLink className="w-3 h-3 text-gray-400" />
-                                            </div>
-                                        </div>
-                                    </a>
 
                                 </div>
 
@@ -1410,44 +1202,6 @@ function Settings() {
                     onCancel={() => setIsClearLogsOpen(false)}
                 />
 
-                {/* Antigravity Cache Clear Modal */}
-                <ModalDialog
-                    isOpen={isClearCacheOpen}
-                    title={t('settings.advanced.clear_cache_confirm_title')}
-                    type="confirm"
-                    confirmText={isClearingCache ? t('common.clearing') : t('common.clear')}
-                    cancelText={t('common.cancel')}
-                    isDestructive={true}
-                    onConfirm={confirmClearAntigravityCache}
-                    onCancel={() => setIsClearCacheOpen(false)}
-                >
-                    <div className="space-y-3">
-                        <p className="text-sm text-gray-600 dark:text-gray-400">
-                            {t('settings.advanced.clear_cache_confirm_msg')}
-                        </p>
-                        {cachePaths.length > 0 ? (
-                            <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3 max-h-40 overflow-y-auto">
-                                <ul className="text-xs font-mono text-gray-600 dark:text-gray-400 space-y-1">
-                                    {cachePaths.map((path, index) => (
-                                        <li key={index} className="truncate">• {path}</li>
-                                    ))}
-                                </ul>
-                            </div>
-                        ) : (
-                            <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3">
-                                <p className="text-xs text-gray-500 dark:text-gray-400">
-                                    {t('settings.advanced.cache_not_found')}
-                                </p>
-                            </div>
-                        )}
-                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-2">
-                            <p className="text-xs text-amber-700 dark:text-amber-400">
-                                {t('settings.advanced.antigravity_cache_warning')}
-                            </p>
-                        </div>
-                    </div>
-                </ModalDialog>
-
                 {/* Homebrew Upgrade Confirm Modal */}
                 <ModalDialog
                     isOpen={isBrewConfirmOpen}
@@ -1464,11 +1218,11 @@ function Settings() {
                         </p>
                         <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3">
                             <div className="flex items-center justify-between gap-2">
-                                <code className="text-xs text-gray-700 dark:text-gray-300 break-all">brew upgrade --cask antigravity-tools</code>
+                                <code className="text-xs text-gray-700 dark:text-gray-300 break-all">brew upgrade --cask buddy-tools</code>
                                 <button
                                     className="shrink-0 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 border border-gray-200 dark:border-base-300 rounded hover:bg-gray-100 dark:hover:bg-base-300 transition-colors"
                                     onClick={() => {
-                                        navigator.clipboard.writeText('brew upgrade --cask antigravity-tools');
+                                        navigator.clipboard.writeText('brew upgrade --cask buddy-tools');
                                         showToast(t('common.copied', 'Copied'), 'success');
                                     }}
                                 >
@@ -1479,11 +1233,11 @@ function Settings() {
                         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3">
                             <p className="text-xs text-amber-700 dark:text-amber-400 mb-2">{t('settings.about.brew_quarantine_hint')}</p>
                             <div className="flex items-center justify-between gap-2">
-                                <code className="text-xs text-amber-800 dark:text-amber-300 break-all">sudo xattr -rd com.apple.quarantine "/Applications/Antigravity Tools.app"</code>
+                                <code className="text-xs text-amber-800 dark:text-amber-300 break-all">sudo xattr -rd com.apple.quarantine "/Applications/Buddy Tools.app"</code>
                                 <button
                                     className="shrink-0 px-2 py-1 text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200 border border-amber-200 dark:border-amber-700 rounded hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
                                     onClick={() => {
-                                        navigator.clipboard.writeText('sudo xattr -rd com.apple.quarantine "/Applications/Antigravity Tools.app"');
+                                        navigator.clipboard.writeText('sudo xattr -rd com.apple.quarantine "/Applications/Buddy Tools.app"');
                                         showToast(t('common.copied', 'Copied'), 'success');
                                     }}
                                 >

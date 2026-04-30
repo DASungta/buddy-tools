@@ -4,8 +4,33 @@
  * 将 quota_raw / usage_raw / auth_raw JSON blob 解析为 UI 可渲染的分组结构。
  */
 
-import type { CodebuddyAccount, OfficialQuotaResource, QuotaCategoryGroup } from '../types/codebuddy';
+import type { CodebuddyAccount, OfficialQuotaResource, QuotaCategory, QuotaCategoryGroup } from '../types/codebuddy';
 import { PACKAGE_CODE, RESOURCE_STATUS } from '../types/codebuddy';
+
+export type CodebuddyQuotaSyncState =
+  | 'available'
+  | 'token_expired'
+  | 'model_list_not_refreshed'
+  | 'quota_missing'
+  | 'refresh_failed';
+
+export interface CodebuddyQuotaStateMeta {
+  quotaKnown: boolean;
+  syncState: CodebuddyQuotaSyncState;
+  stateReason: string | null;
+  updatedAt: number | null;
+}
+
+export type CodebuddyQuotaResource = OfficialQuotaResource & {
+  quotaKnown?: boolean;
+  resourcePresent?: boolean;
+};
+
+export type CodebuddyQuotaCategoryGroup = QuotaCategoryGroup & CodebuddyQuotaStateMeta & {
+  items: CodebuddyQuotaResource[];
+};
+
+const QUOTA_KNOWN_FIELD = '__quotaKnown';
 
 // ── 基础解析工具 ─────────────────────────────────────────────────────────────────
 
@@ -22,6 +47,12 @@ function parseNumeric(value: unknown): number | null {
   return null;
 }
 
+function toEpochMillis(value: unknown): number | null {
+  const numeric = parseNumeric(value);
+  if (numeric == null || numeric <= 0) return null;
+  return Math.trunc(numeric > 1_000_000_000_000 ? numeric : numeric * 1000);
+}
+
 function parseDateTimeToEpoch(value: unknown): number | null {
   if (typeof value !== 'string') return null;
   const text = value.trim();
@@ -31,23 +62,21 @@ function parseDateTimeToEpoch(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseCycleTotal(a: Record<string, unknown>): number {
+function parseCycleTotal(a: Record<string, unknown>): number | null {
   return (
     parseNumeric(a.CycleCapacitySizePrecise) ??
     parseNumeric(a.CycleCapacitySize) ??
     parseNumeric(a.CapacitySizePrecise) ??
-    parseNumeric(a.CapacitySize) ??
-    0
+    parseNumeric(a.CapacitySize)
   );
 }
 
-function parseCycleRemain(a: Record<string, unknown>): number {
+function parseCycleRemain(a: Record<string, unknown>): number | null {
   return (
     parseNumeric(a.CycleCapacityRemainPrecise) ??
     parseNumeric(a.CycleCapacityRemain) ??
     parseNumeric(a.CapacityRemainPrecise) ??
-    parseNumeric(a.CapacityRemain) ??
-    0
+    parseNumeric(a.CapacityRemain)
   );
 }
 
@@ -72,35 +101,78 @@ function isProPackage(a: Record<string, unknown>): boolean {
 }
 
 function extractResourceAccounts(account: CodebuddyAccount): Array<Record<string, unknown>> {
-  const usageRoot = asRecord(account.usage_raw);
   const quotaRoot = asRecord(account.quota_raw);
-  const userResource = asRecord(quotaRoot?.userResource) ?? usageRoot;
-  const data = asRecord(userResource?.data);
-  const response = asRecord(data?.Response);
-  const payload = asRecord(response?.Data);
-  const list = Array.isArray(payload?.Accounts) ? (payload!.Accounts as unknown[]) : [];
-  return list.filter((a): a is Record<string, unknown> => a != null && typeof a === 'object');
+  const usageRoot = asRecord(account.usage_raw);
+  const candidates = [
+    asRecord(quotaRoot?.userResource),
+    quotaRoot,
+    asRecord(usageRoot?.userResource),
+    asRecord(usageRoot?.profileUsage),
+    usageRoot,
+  ];
+
+  for (const candidate of candidates) {
+    const data = asRecord(candidate?.data);
+    const response = asRecord(data?.Response);
+    const payload = asRecord(response?.Data);
+    if (Array.isArray(payload?.Accounts)) {
+      return payload.Accounts.filter((a): a is Record<string, unknown> => a != null && typeof a === 'object');
+    }
+  }
+
+  return [];
+}
+
+function containsCachedModels(value: unknown, depth = 0): boolean {
+  if (depth > 5) return false;
+  const record = asRecord(value);
+  if (!record) return false;
+
+  const models = record.models ?? record.Models;
+  if (Array.isArray(models) && models.length > 0) {
+    return true;
+  }
+
+  return ['raw', 'userResource', 'profileUsage', 'data', 'Response', 'Data'].some((key) =>
+    containsCachedModels(record[key], depth + 1),
+  );
+}
+
+function accountHasCachedModels(account: CodebuddyAccount): boolean {
+  return containsCachedModels(account.quota_raw) || containsCachedModels(account.usage_raw);
 }
 
 function aggregateCycleResources(list: Array<Record<string, unknown>>): Record<string, unknown> | null {
   if (list.length === 0) return null;
   const first = list[0];
   const totals = list.reduce(
-    (acc: { total: number; remain: number }, item) => {
-      acc.total += parseCycleTotal(item);
-      acc.remain += parseCycleRemain(item);
+    (acc: { total: number; remain: number; totalKnown: boolean; remainKnown: boolean }, item) => {
+      const total = parseCycleTotal(item);
+      const remain = parseCycleRemain(item);
+      if (total == null) {
+        acc.totalKnown = false;
+      } else {
+        acc.total += total;
+      }
+      if (remain == null) {
+        acc.remainKnown = false;
+      } else {
+        acc.remain += remain;
+      }
       return acc;
     },
-    { total: 0, remain: 0 },
+    { total: 0, remain: 0, totalKnown: true, remainKnown: true },
   );
+
   return {
     ...first,
-    CycleCapacitySizePrecise: String(totals.total),
-    CycleCapacityRemainPrecise: String(totals.remain),
+    ...(totals.totalKnown ? { CycleCapacitySizePrecise: String(totals.total) } : {}),
+    ...(totals.remainKnown ? { CycleCapacityRemainPrecise: String(totals.remain) } : {}),
+    [QUOTA_KNOWN_FIELD]: totals.totalKnown && totals.remainKnown,
   };
 }
 
-function toOfficialQuotaResource(raw: Record<string, unknown>): OfficialQuotaResource {
+function toOfficialQuotaResource(raw: Record<string, unknown>): CodebuddyQuotaResource {
   const packageCode = typeof raw.PackageCode === 'string' ? raw.PackageCode : null;
   const packageName = typeof raw.PackageName === 'string' ? raw.PackageName : null;
   const cycleStartTime = typeof raw.CycleStartTime === 'string' ? raw.CycleStartTime : null;
@@ -108,11 +180,15 @@ function toOfficialQuotaResource(raw: Record<string, unknown>): OfficialQuotaRes
   const deductionEndTime = parseNumeric(raw.DeductionEndTime);
   const expiredTime = typeof raw.ExpiredTime === 'string' ? raw.ExpiredTime : null;
 
-  const total = parseCycleTotal(raw);
-  const remain = parseCycleRemain(raw);
-  const used = Math.max(0, total - remain);
-  const usedPercent = total > 0 ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
-  const remainPercent = total > 0 ? Math.max(0, Math.min(100, (remain / total) * 100)) : null;
+  const totalValue = parseCycleTotal(raw);
+  const remainValue = parseCycleRemain(raw);
+  const rawQuotaKnown = typeof raw[QUOTA_KNOWN_FIELD] === 'boolean' ? raw[QUOTA_KNOWN_FIELD] === true : null;
+  const quotaKnown = rawQuotaKnown ?? (totalValue != null && remainValue != null);
+  const total = totalValue ?? 0;
+  const remain = remainValue ?? 0;
+  const used = quotaKnown ? Math.max(0, total - remain) : 0;
+  const usedPercent = quotaKnown && total > 0 ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
+  const remainPercent = quotaKnown && total > 0 ? Math.max(0, Math.min(100, (remain / total) * 100)) : null;
 
   const cycleEndAt = parseDateTimeToEpoch(cycleEndTime);
   const expireAt = deductionEndTime ?? parseDateTimeToEpoch(expiredTime) ?? cycleEndAt;
@@ -135,23 +211,73 @@ function toOfficialQuotaResource(raw: Record<string, unknown>): OfficialQuotaRes
     refreshAt,
     expireAt,
     isBasePackage,
+    quotaKnown,
+    resourcePresent: true,
   };
+}
+
+function isQuotaResourceKnown(resource: OfficialQuotaResource): boolean {
+  return (resource as CodebuddyQuotaResource).quotaKnown === true;
+}
+
+function isQuotaResourcePresent(resource: OfficialQuotaResource): boolean {
+  return (resource as CodebuddyQuotaResource).resourcePresent === true;
+}
+
+function isTokenExpired(account: CodebuddyAccount): boolean {
+  const expiresAt = toEpochMillis(account.expires_at);
+  if (expiresAt != null && expiresAt <= Date.now()) {
+    return true;
+  }
+
+  const statusText = `${account.status ?? ''} ${account.status_reason ?? ''}`.toLowerCase();
+  return /(?:token[_\s-]?)?expired|unauthorized|invalid[_\s-]?token/.test(statusText);
+}
+
+function getQuotaSyncState(
+  account: CodebuddyAccount,
+  resources: CodebuddyQuotaResource[],
+  extra: CodebuddyQuotaResource,
+): Pick<CodebuddyQuotaStateMeta, 'syncState' | 'stateReason'> {
+  const quotaError = typeof account.quota_query_last_error === 'string' ? account.quota_query_last_error.trim() : '';
+  const statusReason = typeof account.status_reason === 'string' ? account.status_reason.trim() : '';
+  const hasRawPayload = account.quota_raw != null || account.usage_raw != null;
+  const hasCachedModels = accountHasCachedModels(account);
+  const hasResource = resources.length > 0 || isQuotaResourcePresent(extra);
+  const hasKnownQuota = resources.some(isQuotaResourceKnown) || isQuotaResourceKnown(extra);
+
+  if (isTokenExpired(account)) {
+    return { syncState: 'token_expired', stateReason: statusReason || null };
+  }
+  if (quotaError) {
+    return { syncState: 'refresh_failed', stateReason: quotaError };
+  }
+  if ((!hasRawPayload && !hasCachedModels) || (!hasCachedModels && !hasResource)) {
+    return { syncState: 'model_list_not_refreshed', stateReason: null };
+  }
+  if (!hasKnownQuota) {
+    return { syncState: 'quota_missing', stateReason: null };
+  }
+  return { syncState: 'available', stateReason: null };
 }
 
 // ── 官方配额模型 ─────────────────────────────────────────────────────────────────
 
+export function hasCodebuddyQuotaData(account: CodebuddyAccount): boolean {
+  const { resources, extra } = getCodebuddyOfficialQuotaModel(account);
+  return resources.some(isQuotaResourceKnown) || isQuotaResourceKnown(extra);
+}
+
 export function getCodebuddyOfficialQuotaModel(account: CodebuddyAccount): {
-  resources: OfficialQuotaResource[];
-  extra: OfficialQuotaResource;
+  resources: CodebuddyQuotaResource[];
+  extra: CodebuddyQuotaResource;
   updatedAt: number | null;
 } {
-  const lastUsed = account.last_used;
   const updatedAt =
-    typeof lastUsed === 'number' && Number.isFinite(lastUsed) && lastUsed > 0
-      ? Math.trunc(lastUsed * 1000)
-      : null;
+    toEpochMillis((account as { usage_updated_at?: unknown }).usage_updated_at) ??
+    toEpochMillis(account.last_used);
 
-  const empty: OfficialQuotaResource = {
+  const empty: CodebuddyQuotaResource = {
     packageCode: PACKAGE_CODE.extra,
     packageName: null,
     cycleStartTime: null,
@@ -166,6 +292,8 @@ export function getCodebuddyOfficialQuotaModel(account: CodebuddyAccount): {
     refreshAt: null,
     expireAt: null,
     isBasePackage: false,
+    quotaKnown: false,
+    resourcePresent: false,
   };
 
   const all = extractResourceAccounts(account).filter(isActiveResource);
@@ -211,14 +339,62 @@ export function getCodebuddyPlanBadge(planType: string): string {
 
 // ── 配额分组（主入口）────────────────────────────────────────────────────────────
 
+interface QuotaAggregate {
+  total: number;
+  remain: number;
+  used: number;
+  usedPercent: number;
+  remainPercent: number | null;
+  quotaClass: string;
+  quotaKnown: boolean;
+}
+
+function aggregateQuotaItems(items: CodebuddyQuotaResource[]): QuotaAggregate {
+  const quotaKnown = items.length > 0 && items.every(isQuotaResourceKnown);
+  const total = items.reduce((sum, r) => sum + r.total, 0);
+  const remain = items.reduce((sum, r) => sum + r.remain, 0);
+  const used = quotaKnown ? items.reduce((sum, r) => sum + r.used, 0) : 0;
+  const usedPercent = quotaKnown && total > 0 ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
+  const remainPercent = quotaKnown && total > 0 ? Math.max(0, Math.min(100, (remain / total) * 100)) : null;
+  const quotaClass =
+    remainPercent != null
+      ? remainPercent <= 10
+        ? 'critical'
+        : remainPercent <= 30
+        ? 'low'
+        : remainPercent <= 60
+        ? 'medium'
+        : 'high'
+      : 'high';
+  return { total, remain, used, usedPercent, remainPercent, quotaClass, quotaKnown };
+}
+
+function buildQuotaGroup(
+  key: QuotaCategory,
+  label: string,
+  aggregate: QuotaAggregate,
+  items: CodebuddyQuotaResource[],
+  meta: CodebuddyQuotaStateMeta,
+): CodebuddyQuotaCategoryGroup {
+  return {
+    key,
+    label,
+    ...aggregate,
+    items,
+    visible: items.length > 0,
+    syncState: meta.syncState,
+    stateReason: meta.stateReason,
+    updatedAt: meta.updatedAt,
+  };
+}
+
 export function getCodebuddyUsage(account: CodebuddyAccount): QuotaCategoryGroup[] {
   const model = getCodebuddyOfficialQuotaModel(account);
 
-  // 按类型分组
-  const baseItems: OfficialQuotaResource[] = [];
-  const activityItems: OfficialQuotaResource[] = [];
-  const extraItems: OfficialQuotaResource[] = [];
-  const otherItems: OfficialQuotaResource[] = [];
+  const baseItems: CodebuddyQuotaResource[] = [];
+  const activityItems: CodebuddyQuotaResource[] = [];
+  const extraItems: CodebuddyQuotaResource[] = [];
+  const otherItems: CodebuddyQuotaResource[] = [];
 
   for (const resource of model.resources) {
     const code = resource.packageCode;
@@ -237,40 +413,28 @@ export function getCodebuddyUsage(account: CodebuddyAccount): QuotaCategoryGroup
     }
   }
 
-  if (model.extra.total > 0 || model.extra.remain > 0 || model.extra.used > 0) {
+  if (isQuotaResourcePresent(model.extra)) {
     extraItems.push(model.extra);
   }
 
-  const aggregate = (
-    items: OfficialQuotaResource[],
-  ): Omit<QuotaCategoryGroup, 'key' | 'label' | 'items' | 'visible'> => {
-    const total = items.reduce((sum, r) => sum + r.total, 0);
-    const remain = items.reduce((sum, r) => sum + r.remain, 0);
-    const used = items.reduce((sum, r) => sum + r.used, 0);
-    const usedPercent = total > 0 ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
-    const remainPercent = total > 0 ? Math.max(0, Math.min(100, (remain / total) * 100)) : null;
-    const quotaClass =
-      remainPercent != null
-        ? remainPercent <= 10
-          ? 'critical'
-          : remainPercent <= 30
-          ? 'low'
-          : remainPercent <= 60
-          ? 'medium'
-          : 'high'
-        : 'high';
-    return { total, remain, used, usedPercent, remainPercent, quotaClass };
+  const baseAgg = aggregateQuotaItems(baseItems);
+  const activityAgg = aggregateQuotaItems(activityItems);
+  const extraAgg = aggregateQuotaItems(extraItems);
+  const otherAgg = aggregateQuotaItems(otherItems);
+  const state = getQuotaSyncState(account, model.resources, model.extra);
+  const meta: CodebuddyQuotaStateMeta = {
+    quotaKnown: model.resources.some(isQuotaResourceKnown) || isQuotaResourceKnown(model.extra),
+    syncState: state.syncState,
+    stateReason: state.stateReason,
+    updatedAt: model.updatedAt,
   };
 
-  const baseAgg = aggregate(baseItems);
-  const activityAgg = aggregate(activityItems);
-  const extraAgg = aggregate(extraItems);
-  const otherAgg = aggregate(otherItems);
-
-  return [
-    { key: 'base', label: '基础体验包', ...baseAgg, items: baseItems, visible: baseAgg.total > 0 },
-    { key: 'activity', label: '活动赠送包', ...activityAgg, items: activityItems, visible: activityAgg.total > 0 },
-    { key: 'extra', label: '加量包', ...extraAgg, items: extraItems, visible: extraAgg.total > 0 },
-    { key: 'other', label: '其他', ...otherAgg, items: otherItems, visible: otherAgg.total > 0 },
+  const groups: CodebuddyQuotaCategoryGroup[] = [
+    buildQuotaGroup('base', '基础体验包', baseAgg, baseItems, meta),
+    buildQuotaGroup('activity', '活动赠送包', activityAgg, activityItems, meta),
+    buildQuotaGroup('extra', '加量包', extraAgg, extraItems, meta),
+    buildQuotaGroup('other', '其他', otherAgg, otherItems, meta),
   ];
+
+  return groups;
 }

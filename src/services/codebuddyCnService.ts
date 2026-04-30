@@ -1,6 +1,9 @@
 import { request as invoke } from '../utils/request';
+import { MODEL_CONFIG, sortModels } from '../config/modelConfig';
+import { getModelDisplayName, isInternalOrDeprecatedModel } from '../utils/modelNames';
 import type {
   CodebuddyCnAccount,
+  CodebuddyCnModelInfo,
   CheckinStatusResponse,
   CheckinResponse,
 } from '../types/codebuddyCn';
@@ -11,6 +14,28 @@ export async function listCodebuddyCnAccounts(): Promise<CodebuddyCnAccount[]> {
     return response.accounts;
   }
   return response || [];
+}
+
+export async function listCodebuddyCnCachedModels(
+  accountId?: string,
+): Promise<CodebuddyCnModelInfo[]> {
+  const models = await invoke<CodebuddyCnModelInfo[]>('list_codebuddy_cn_cached_models', { accountId: accountId ?? null });
+  return Array.isArray(models) ? models.filter((model) => !isInternalOrDeprecatedModel(model.id, model.display_name ?? undefined)) : [];
+}
+
+export async function getCodebuddyCnModelCatalog(accountId?: string): Promise<CodebuddyCnModelInfo[]> {
+  const cachedModels = await listCodebuddyCnCachedModels(accountId);
+  if (cachedModels.length > 0) {
+    return sortModels(cachedModels);
+  }
+
+  return sortModels(
+    Object.keys(MODEL_CONFIG).map((id) => ({
+      id,
+      display_name: getModelDisplayName(id),
+      source: 'frontend_static_fallback',
+    })),
+  );
 }
 
 export async function addCodebuddyCnAccountWithToken(

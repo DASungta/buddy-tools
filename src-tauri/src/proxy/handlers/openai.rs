@@ -21,9 +21,74 @@ use super::common::{
 };
 use crate::proxy::common::client_adapter::CLIENT_ADAPTERS; // [NEW] Adapter Registry
 use crate::proxy::session_manager::SessionManager;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method};
 use tokio::time::Duration;
 use crate::modules::account;
+
+async fn dispatch_codebuddy_openai_if_needed(
+    state: &AppState,
+    headers: &HeaderMap,
+    openai_req: &OpenAIRequest,
+    mapped_model: &str,
+) -> Option<Response> {
+    let Some(canonical_model) = crate::proxy::common::model_mapping::canonicalize_buddy_model_id(mapped_model) else {
+        return None;
+    };
+
+    let cb = state.codebuddy_cn.read().await.clone();
+    if !cb.enabled || cb.dispatch_mode == crate::proxy::CodeBuddyDispatchMode::Off {
+        return Some(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "CodeBuddy account/token is not configured",
+            "invalid_request_error",
+            "codebuddy_not_configured",
+        ));
+    }
+
+    let mut body = match serde_json::to_value(openai_req) {
+        Ok(value) => value,
+        Err(e) => {
+            return Some(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid CodeBuddy request: {}", e),
+                "invalid_request_error",
+                "invalid_request",
+            ));
+        }
+    };
+    body["model"] = Value::String(canonical_model);
+
+    Some(
+        crate::proxy::providers::codebuddy_cn::forward_openai_json(
+            state,
+            Method::POST,
+            "/v2/chat/completions",
+            headers,
+            body,
+        )
+        .await,
+    )
+}
+
+fn openai_error_response(
+    status: StatusCode,
+    message: impl Into<String>,
+    error_type: &str,
+    code: &str,
+) -> Response {
+    (
+        status,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": error_type,
+                "code": code
+            }
+        })),
+    )
+        .into_response()
+}
 
 pub async fn handle_chat_completions(
     State(state): State<AppState>,
@@ -146,6 +211,18 @@ pub async fn handle_chat_completions(
         debug!("[{}] Client Adapter detected", trace_id);
     }
 
+    // 2. 模型路由解析 (移到循环外以支持在所有路径返回 X-Mapped-Model)
+    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
+        &openai_req.model,
+        &*state.custom_mapping.read().await,
+    );
+
+    if let Some(response) =
+        dispatch_codebuddy_openai_if_needed(&state, &headers, &openai_req, &mapped_model).await
+    {
+        return Ok(response);
+    }
+
     // 1. 获取 UpstreamClient (Clone handle)
     let upstream = state.upstream.clone();
     let token_manager = state.token_manager;
@@ -155,12 +232,6 @@ pub async fn handle_chat_completions(
 
     let mut last_error = String::new();
     let mut last_email: Option<String> = None;
-
-    // 2. 模型路由解析 (移到循环外以支持在所有路径返回 X-Mapped-Model)
-    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
-        &openai_req.model,
-        &*state.custom_mapping.read().await,
-    );
 
     for attempt in 0..max_attempts {
         // 将 OpenAI 工具转为 Value 数组以便探测联网
@@ -1165,6 +1236,19 @@ pub async fn handle_completions(
             });
     }
 
+    // 2. 模型路由解析 (移到循环外以支持在所有路径返回 X-Mapped-Model)
+    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
+        &openai_req.model,
+        &*state.custom_mapping.read().await,
+    );
+    let trace_id = format!("req_{}", chrono::Utc::now().timestamp_subsec_millis());
+
+    if let Some(response) =
+        dispatch_codebuddy_openai_if_needed(&state, &HeaderMap::new(), &openai_req, &mapped_model).await
+    {
+        return response;
+    }
+
     let upstream = state.upstream.clone();
     let token_manager = state.token_manager;
     let pool_size = token_manager.len();
@@ -1173,13 +1257,6 @@ pub async fn handle_completions(
 
     let mut last_error = String::new();
     let mut last_email: Option<String> = None;
-
-    // 2. 模型路由解析 (移到循环外以支持在所有路径返回 X-Mapped-Model)
-    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
-        &openai_req.model,
-        &*state.custom_mapping.read().await,
-    );
-    let trace_id = format!("req_{}", chrono::Utc::now().timestamp_subsec_millis());
 
     for attempt in 0..max_attempts {
         // 3. 模型配置解析
@@ -1617,19 +1694,17 @@ pub async fn handle_completions(
     }
 }
 
-pub async fn handle_list_models(State(state): State<AppState>) -> impl IntoResponse {
-    use crate::proxy::common::model_mapping::get_all_dynamic_models;
+pub async fn handle_list_models(State(_state): State<AppState>) -> impl IntoResponse {
+    use crate::proxy::common::model_mapping::get_buddy_model_catalog;
 
-    let model_ids = get_all_dynamic_models(&state.custom_mapping, Some(&state.token_manager)).await;
-
-    let data: Vec<_> = model_ids
+    let data: Vec<_> = get_buddy_model_catalog()
         .into_iter()
         .map(|id| {
             json!({
                 "id": id,
                 "object": "model",
                 "created": 1706745600,
-                "owned_by": "antigravity"
+                "owned_by": "codebuddy"
             })
         })
         .collect();

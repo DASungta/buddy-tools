@@ -1141,13 +1141,11 @@ impl TokenManager {
         let normalized_target = crate::proxy::common::model_mapping::normalize_to_standard_id(target_model)
             .unwrap_or_else(|| target_model.to_string());
 
-        // 仅保留明确拥有该模型配额的账号
-        // 这一步确保了 "保证有模型才可以进入轮询"，特别是对 Opus 4.6 等高端模型
+        // 仅过滤明确缺少该模型配额的账号；空配额表示 quota 数据未知，不能当作不支持模型。
         let candidate_count_before = tokens_snapshot.len();
-        
-        // 此处假设所有受支持的模型都会出现在 model_quotas 中
-        // 如果 API 返回的配额信息不完整，可能会导致误杀，但为了严格性，我们执行此过滤
-        tokens_snapshot.retain(|t| t.model_quotas.contains_key(&normalized_target));
+        tokens_snapshot.retain(|t| {
+            t.model_quotas.is_empty() || t.model_quotas.contains_key(&normalized_target)
+        });
 
         if tokens_snapshot.is_empty() {
             if candidate_count_before > 0 {

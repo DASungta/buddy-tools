@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use crate::models::codebuddy::{
-    CheckinResponse, CheckinStatusResponse, CodebuddyAccount, CodebuddyOAuthStartResponse,
+    CheckinResponse, CheckinStatusResponse, CodebuddyAccount, CodebuddyCnModelInfo,
+    CodebuddyOAuthStartResponse,
 };
 use crate::modules::{codebuddy_cn_account, codebuddy_cn_oauth};
 use tauri::Emitter;
@@ -9,6 +10,13 @@ use tauri::Emitter;
 #[tauri::command]
 pub fn list_codebuddy_cn_accounts() -> Result<Vec<CodebuddyAccount>, String> {
     codebuddy_cn_account::list_accounts_checked()
+}
+
+#[tauri::command]
+pub fn list_codebuddy_cn_cached_models(
+    account_id: Option<String>,
+) -> Result<Vec<CodebuddyCnModelInfo>, String> {
+    codebuddy_cn_account::list_cached_models_from_accounts(account_id.as_deref())
 }
 
 #[tauri::command]
@@ -93,7 +101,9 @@ pub fn get_codebuddy_cn_accounts_index_path() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn import_codebuddy_cn_from_json(json_content: String) -> Result<Vec<CodebuddyAccount>, String> {
+pub fn import_codebuddy_cn_from_json(
+    json_content: String,
+) -> Result<Vec<CodebuddyAccount>, String> {
     codebuddy_cn_account::import_from_json(&json_content)
 }
 
@@ -114,7 +124,10 @@ pub async fn set_current_codebuddy_cn_account(
     tracing::info!("[CodeBuddy CN Command] 已设置当前活跃账号: {}", id);
     let instance_lock = proxy_state.instance.read().await;
     if let Some(instance) = instance_lock.as_ref() {
-        instance.axum_server.update_codebuddy_cn(&config.proxy).await;
+        instance
+            .axum_server
+            .update_codebuddy_cn(&config.proxy)
+            .await;
     }
     drop(instance_lock);
     let _ = app.emit("config://updated", ());
@@ -150,8 +163,8 @@ pub fn cancel_codebuddy_cn_oauth_login(login_id: Option<String>) {
 pub async fn get_checkin_status_codebuddy_cn(
     account_id: String,
 ) -> Result<CheckinStatusResponse, String> {
-    let account = codebuddy_cn_account::load_account(&account_id)
-        .ok_or_else(|| "账号不存在".to_string())?;
+    let account =
+        codebuddy_cn_account::load_account(&account_id).ok_or_else(|| "账号不存在".to_string())?;
     codebuddy_cn_oauth::get_checkin_status(
         &account.access_token,
         account.uid.as_deref(),

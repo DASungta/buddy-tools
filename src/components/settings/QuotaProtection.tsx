@@ -13,9 +13,8 @@ const QuotaProtection = ({ config, onChange }: QuotaProtectionProps) => {
 
     const handleEnabledChange = (enabled: boolean) => {
         let newConfig = { ...config, enabled };
-        // 如果开启保护且勾选列表为空，则默认勾选 claude
         if (enabled && (!config.monitored_models || config.monitored_models.length === 0)) {
-            newConfig.monitored_models = ['claude'];
+            newConfig.monitored_models = ['auto'];
         }
         onChange(newConfig);
     };

@@ -728,7 +728,7 @@ pub fn transform_openai_request(
         inner_request["sessionId"] = json!(crate::proxy::common::session::derive_session_id(&t.account_id));
     }
 
-    let final_body = json!({
+    let mut final_body = json!({
         "project": project_id,
         // [CHANGED v4.1.24] Structured requestId: agent/<session>/<turn> to match official format
         "requestId": format!("agent/antigravity/{}/{}", &session_id[..session_id.len().min(8)], message_count),
@@ -738,6 +738,28 @@ pub fn transform_openai_request(
         // [CHANGED v4.1.24] Use "agent" for all non-image requests (matches official client)
         "requestType": if config.request_type == "image_gen" { "image_gen" } else { "agent" }
     });
+
+    if mapped_model.starts_with("projects/") {
+        if let Some(request_body) = final_body.get("request").cloned() {
+            if let Some(obj) = final_body.as_object_mut() {
+                if let Some(contents) = request_body.get("contents") {
+                    obj.insert("contents".to_string(), contents.clone());
+                }
+                if let Some(generation_config) = request_body.get("generationConfig") {
+                    obj.insert("generationConfig".to_string(), generation_config.clone());
+                }
+                if let Some(tools) = request_body.get("tools") {
+                    obj.insert("tools".to_string(), tools.clone());
+                }
+                if let Some(tool_config) = request_body.get("toolConfig") {
+                    obj.insert("toolConfig".to_string(), tool_config.clone());
+                }
+                if let Some(system_instruction) = request_body.get("systemInstruction") {
+                    obj.insert("systemInstruction".to_string(), system_instruction.clone());
+                }
+            }
+        }
+    }
 
     (final_body, session_id, message_count)
 }
@@ -800,7 +822,8 @@ mod tests {
     fn test_issue_1602_custom_mode_gemini_capping() {
         // [FIX #1602] Regression test for custom mode capping
         use crate::proxy::config::{ThinkingBudgetConfig, ThinkingBudgetMode, update_thinking_budget_config};
-        
+        let _lock = crate::proxy::config::test_config_lock();
+
         // 设置自定义模式，且数值超过 24k
         update_thinking_budget_config(ThinkingBudgetConfig {
             mode: ThinkingBudgetMode::Custom,
@@ -894,6 +917,10 @@ mod tests {
     
     #[test]
     fn test_gemini_pro_thinking_injection() {
+        use crate::proxy::config::{ThinkingBudgetConfig, update_thinking_budget_config};
+        let _lock = crate::proxy::config::test_config_lock();
+        update_thinking_budget_config(ThinkingBudgetConfig::default());
+
         let req = OpenAIRequest {
             model: "gemini-3-pro-preview".to_string(),
             messages: vec![OpenAIMessage {

@@ -9,15 +9,14 @@ use tracing::{info, warn};
 
 use crate::models::codebuddy::{
     CheckinResponse, CheckinStatusResponse, CodebuddyAccount, CodebuddyAccountIndex,
-    CodebuddyOAuthCompletePayload,
+    CodebuddyCnModelInfo, CodebuddyOAuthCompletePayload,
 };
 use crate::modules::{app_paths, codebuddy_cn_oauth};
 
 const ACCOUNTS_INDEX_FILE: &str = "codebuddy_cn_accounts.json";
 const ACCOUNTS_DIR: &str = "codebuddy_cn_accounts";
 
-static CODEBUDDY_CN_ACCOUNT_INDEX_LOCK: LazyLock<Mutex<()>> =
-    LazyLock::new(|| Mutex::new(()));
+static CODEBUDDY_CN_ACCOUNT_INDEX_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
@@ -31,8 +30,7 @@ fn get_accounts_dir() -> Result<PathBuf, String> {
     let base = get_data_dir()?;
     let dir = base.join(ACCOUNTS_DIR);
     if !dir.exists() {
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("创建 CodeBuddy CN 账号目录失败: {}", e))?;
+        fs::create_dir_all(&dir).map_err(|e| format!("创建 CodeBuddy CN 账号目录失败: {}", e))?;
     }
     Ok(dir)
 }
@@ -185,8 +183,93 @@ fn save_account_index(index: &CodebuddyAccountIndex) -> Result<(), String> {
         .map_err(|e| format!("写入账号索引失败: {}", e))
 }
 
-fn repair_account_index_from_details(_reason: &str) -> Option<CodebuddyAccountIndex> {
-    None
+fn repair_account_index_from_details(reason: &str) -> Option<CodebuddyAccountIndex> {
+    let accounts_dir = match get_accounts_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            warn!(
+                "[CodeBuddy CN Account] 修复账号索引失败，无法打开详情目录: reason={}, error={}",
+                reason, err
+            );
+            return None;
+        }
+    };
+
+    let entries = match fs::read_dir(&accounts_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!(
+                "[CodeBuddy CN Account] 修复账号索引失败，无法扫描详情目录: reason={}, path={}, error={}",
+                reason,
+                accounts_dir.display(),
+                err
+            );
+            return None;
+        }
+    };
+
+    let mut accounts = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let path = entry.path();
+        if !path.is_file() || path.extension().map_or(true, |ext| ext != "json") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                warn!(
+                    "[CodeBuddy CN Account] 跳过无法读取的账号详情: path={}, error={}",
+                    path.display(),
+                    err
+                );
+                continue;
+            }
+        };
+        let account = match crate::modules::atomic_write::parse_json_with_auto_restore::<
+            CodebuddyAccount,
+        >(&path, &content)
+        {
+            Ok(account) => account,
+            Err(err) => {
+                warn!(
+                    "[CodeBuddy CN Account] 跳过无效账号详情: path={}, error={}",
+                    path.display(),
+                    err
+                );
+                continue;
+            }
+        };
+        if account.id.trim().is_empty() || !seen_ids.insert(account.id.clone()) {
+            continue;
+        }
+        accounts.push(account);
+    }
+
+    accounts.sort_by(|left, right| {
+        right
+            .last_used
+            .cmp(&left.last_used)
+            .then_with(|| left.email.cmp(&right.email))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut index = CodebuddyAccountIndex::new();
+    index.accounts = accounts.iter().map(|account| account.summary()).collect();
+    if let Err(err) = save_account_index(&index) {
+        warn!(
+            "[CodeBuddy CN Account] 修复账号索引后写入失败: reason={}, error={}",
+            reason, err
+        );
+        return None;
+    }
+
+    info!(
+        "[CodeBuddy CN Account] 已从详情文件修复账号索引: reason={}, count={}",
+        reason,
+        index.accounts.len()
+    );
+    Some(index)
 }
 
 fn refresh_summary(index: &mut CodebuddyAccountIndex, account: &CodebuddyAccount) {
@@ -234,12 +317,147 @@ fn normalize_email_identity(value: Option<&str>) -> Option<String> {
     })
 }
 
+fn derive_account_scope(
+    enterprise_id: Option<&str>,
+    enterprise_name: Option<&str>,
+    plan_type: Option<&str>,
+) -> String {
+    let has_enterprise = enterprise_id
+        .or(enterprise_name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let has_enterprise_plan = plan_type
+        .map(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("enterprise")
+                || lower.contains("ultimate")
+                || lower.contains("exclusive")
+                || lower.contains("premise")
+        })
+        .unwrap_or(false);
+
+    if has_enterprise || has_enterprise_plan {
+        "enterprise".to_string()
+    } else {
+        "personal".to_string()
+    }
+}
+
+fn normalize_account_scope(
+    value: Option<&str>,
+    enterprise_id: Option<&str>,
+    enterprise_name: Option<&str>,
+    plan_type: Option<&str>,
+) -> String {
+    match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("enterprise") => "enterprise".to_string(),
+        Some("personal") => "personal".to_string(),
+        _ => derive_account_scope(enterprise_id, enterprise_name, plan_type),
+    }
+}
+
+fn normalize_context_part(value: Option<&str>, fallback: &str) -> String {
+    value
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn account_context_id_from_parts(
+    uid: Option<&str>,
+    email: Option<&str>,
+    enterprise_id: Option<&str>,
+    enterprise_name: Option<&str>,
+    scope: &str,
+) -> String {
+    let identity = normalize_context_part(uid.or(email), "codebuddy_cn_user");
+    if scope == "enterprise" {
+        let enterprise = normalize_context_part(enterprise_id.or(enterprise_name), "enterprise");
+        format!("enterprise:{}:{}", enterprise, identity)
+    } else {
+        format!("personal:{}", identity)
+    }
+}
+
+fn canonical_account_context_id(value: String) -> String {
+    let parts: Vec<&str> = value.split(':').collect();
+    match parts.as_slice() {
+        ["personal", identity, ..] => format!("personal:{}", identity),
+        ["enterprise", enterprise, identity, ..] => {
+            format!("enterprise:{}:{}", enterprise, identity)
+        }
+        _ => value,
+    }
+}
+
+fn payload_account_scope(payload: &CodebuddyOAuthCompletePayload) -> String {
+    normalize_account_scope(
+        payload.account_scope.as_deref(),
+        payload.enterprise_id.as_deref(),
+        payload.enterprise_name.as_deref(),
+        payload.plan_type.as_deref(),
+    )
+}
+
+fn payload_account_context_id(payload: &CodebuddyOAuthCompletePayload) -> String {
+    payload
+        .account_context_id
+        .clone()
+        .map(canonical_account_context_id)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let scope = payload_account_scope(payload);
+            account_context_id_from_parts(
+                payload.uid.as_deref(),
+                Some(payload.email.as_str()),
+                payload.enterprise_id.as_deref(),
+                payload.enterprise_name.as_deref(),
+                &scope,
+            )
+        })
+}
+
+fn account_account_scope(account: &CodebuddyAccount) -> String {
+    normalize_account_scope(
+        account.account_scope.as_deref(),
+        account.enterprise_id.as_deref(),
+        account.enterprise_name.as_deref(),
+        account.plan_type.as_deref(),
+    )
+}
+
+fn account_account_context_id(account: &CodebuddyAccount) -> String {
+    account
+        .account_context_id
+        .clone()
+        .map(canonical_account_context_id)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let scope = account_account_scope(account);
+            account_context_id_from_parts(
+                account.uid.as_deref(),
+                Some(account.email.as_str()),
+                account.enterprise_id.as_deref(),
+                account.enterprise_name.as_deref(),
+                &scope,
+            )
+        })
+}
+
 fn account_matches_payload_identity(
     existing_uid: Option<&String>,
     existing_email: Option<&String>,
     incoming_uid: Option<&String>,
     incoming_email: Option<&String>,
+    existing_context_id: Option<&String>,
+    incoming_context_id: Option<&String>,
 ) -> bool {
+    if matches!(
+        (existing_context_id, incoming_context_id),
+        (Some(existing), Some(incoming)) if existing != incoming
+    ) {
+        return false;
+    }
     if let (Some(existing), Some(incoming)) = (existing_uid, incoming_uid) {
         if existing == incoming {
             return true;
@@ -273,6 +491,10 @@ fn accounts_are_duplicates(left: &CodebuddyAccount, right: &CodebuddyAccount) ->
         (Some(l), Some(r)) if l != r
     );
     if uid_conflict || email_conflict {
+        return false;
+    }
+
+    if account_account_context_id(left) != account_account_context_id(right) {
         return false;
     }
 
@@ -332,6 +554,9 @@ fn merge_duplicate_account(primary: &mut CodebuddyAccount, dup: &CodebuddyAccoun
     fill_if_none(&mut primary.nickname, &dup.nickname);
     fill_if_none(&mut primary.enterprise_id, &dup.enterprise_id);
     fill_if_none(&mut primary.enterprise_name, &dup.enterprise_name);
+    fill_if_none(&mut primary.account_scope, &dup.account_scope);
+    fill_if_none(&mut primary.account_context_id, &dup.account_context_id);
+    fill_if_none(&mut primary.account_context_raw, &dup.account_context_raw);
     fill_if_none(&mut primary.refresh_token, &dup.refresh_token);
     fill_if_none(&mut primary.token_type, &dup.token_type);
     fill_if_none(&mut primary.expires_at, &dup.expires_at);
@@ -481,6 +706,124 @@ pub fn list_accounts_checked() -> Result<Vec<CodebuddyAccount>, String> {
     Ok(accounts)
 }
 
+pub fn list_cached_models_from_accounts(
+    account_id: Option<&str>,
+) -> Result<Vec<CodebuddyCnModelInfo>, String> {
+    let accounts = match account_id.and_then(|id| normalize_non_empty(Some(id))) {
+        Some(id) => vec![load_account(&id).ok_or_else(|| "账号不存在".to_string())?],
+        None => list_accounts_checked()?,
+    };
+
+    let mut models = Vec::new();
+    let mut seen = HashMap::new();
+    for account in accounts {
+        if let Some(quota_raw) = account.quota_raw.as_ref() {
+            collect_cached_models_from_raw(quota_raw, "quota_raw", &mut models, &mut seen);
+        }
+        if let Some(usage_raw) = account.usage_raw.as_ref() {
+            collect_cached_models_from_raw(usage_raw, "usage_raw", &mut models, &mut seen);
+        }
+    }
+    Ok(models)
+}
+
+fn collect_cached_models_from_raw(
+    raw: &Value,
+    source: &str,
+    models: &mut Vec<CodebuddyCnModelInfo>,
+    seen: &mut HashMap<String, usize>,
+) {
+    let candidates = [Some(raw), raw.get("userResource"), raw.get("profileUsage")];
+    for candidate in candidates.into_iter().flatten() {
+        let Some(raw_models) = candidate.get("models") else {
+            continue;
+        };
+
+        match raw_models {
+            Value::Array(items) => {
+                for item in items {
+                    if let Value::Object(obj) = item {
+                        let id = obj
+                            .get("name")
+                            .or_else(|| obj.get("id"))
+                            .and_then(Value::as_str);
+                        let display_name = obj
+                            .get("display_name")
+                            .or_else(|| obj.get("displayName"))
+                            .and_then(Value::as_str)
+                            .and_then(normalize_model_display_name);
+                        push_cached_model(models, seen, id, display_name, source);
+                    }
+                }
+            }
+            Value::Object(items) => {
+                for (id, item) in items {
+                    let display_name = match item {
+                        Value::Object(obj) => obj
+                            .get("display_name")
+                            .or_else(|| obj.get("displayName"))
+                            .and_then(Value::as_str)
+                            .and_then(normalize_model_display_name),
+                        Value::String(value) => normalize_model_display_name(value),
+                        _ => None,
+                    };
+                    push_cached_model(models, seen, Some(id.as_str()), display_name, source);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_cached_model(
+    models: &mut Vec<CodebuddyCnModelInfo>,
+    seen: &mut HashMap<String, usize>,
+    raw_id: Option<&str>,
+    display_name: Option<String>,
+    source: &str,
+) {
+    let Some(id) = raw_id.and_then(normalize_model_id) else {
+        return;
+    };
+    let key = id.to_lowercase();
+    if let Some(index) = seen.get(&key).copied() {
+        if models[index].display_name.is_none() && display_name.is_some() {
+            models[index].display_name = display_name;
+        }
+        return;
+    }
+
+    seen.insert(key, models.len());
+    models.push(CodebuddyCnModelInfo {
+        id,
+        display_name,
+        source: source.to_string(),
+    });
+}
+
+fn normalize_model_id(raw: &str) -> Option<String> {
+    let id = raw.trim();
+    if id.is_empty() || id.len() > 128 {
+        return None;
+    }
+    if !id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | ':'))
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+fn normalize_model_display_name(raw: &str) -> Option<String> {
+    let display_name = raw.trim();
+    if display_name.is_empty() {
+        None
+    } else {
+        Some(display_name.to_string())
+    }
+}
+
 fn apply_payload(account: &mut CodebuddyAccount, payload: CodebuddyOAuthCompletePayload) {
     let incoming_email = payload.email.trim().to_string();
     if !incoming_email.is_empty() {
@@ -490,6 +833,7 @@ fn apply_payload(account: &mut CodebuddyAccount, payload: CodebuddyOAuthComplete
     account.nickname = payload.nickname;
     account.enterprise_id = payload.enterprise_id;
     account.enterprise_name = payload.enterprise_name;
+    account.account_context_raw = payload.account_context_raw;
     account.access_token = payload.access_token;
     account.refresh_token = payload.refresh_token;
     account.token_type = payload.token_type;
@@ -522,6 +866,22 @@ fn apply_payload(account: &mut CodebuddyAccount, payload: CodebuddyOAuthComplete
     }
     account.status = payload.status;
     account.status_reason = payload.status_reason;
+    let derived_scope = derive_account_scope(
+        account.enterprise_id.as_deref(),
+        account.enterprise_name.as_deref(),
+        account.plan_type.as_deref(),
+    );
+    let scope = payload.account_scope.unwrap_or(derived_scope);
+    account.account_scope = Some(scope.clone());
+    account.account_context_id = Some(payload.account_context_id.unwrap_or_else(|| {
+        account_context_id_from_parts(
+            account.uid.as_deref(),
+            Some(account.email.as_str()),
+            account.enterprise_id.as_deref(),
+            account.enterprise_name.as_deref(),
+            &scope,
+        )
+    }));
     account.last_used = now_ts();
 }
 
@@ -535,11 +895,17 @@ pub fn upsert_account(payload: CodebuddyOAuthCompletePayload) -> Result<Codebudd
     let incoming_uid = normalize_identity(payload.uid.as_deref());
     let incoming_email = normalize_email_identity(Some(payload.email.as_str()));
 
-    let identity_seed = incoming_uid
+    let incoming_context_id = payload_account_context_id(&payload);
+    let identity_part = incoming_uid
         .clone()
         .or_else(|| incoming_email.clone())
         .unwrap_or_else(|| "codebuddy_cn_user".to_string())
         .to_lowercase();
+    let domain_part = normalize_context_part(payload.domain.as_deref(), "default");
+    let identity_seed = format!(
+        "codebuddy-cn:{}:{}:{}",
+        identity_part, incoming_context_id, domain_part
+    );
     let generated_id = format!("codebuddy_cn_{:x}", md5::compute(identity_seed.as_bytes()));
 
     let account_id = index
@@ -549,11 +915,14 @@ pub fn upsert_account(payload: CodebuddyOAuthCompletePayload) -> Result<Codebudd
         .find(|account| {
             let existing_uid = normalize_identity(account.uid.as_deref());
             let existing_email = normalize_email_identity(Some(account.email.as_str()));
+            let existing_context_id = account_account_context_id(account);
             account_matches_payload_identity(
                 existing_uid.as_ref(),
                 existing_email.as_ref(),
                 incoming_uid.as_ref(),
                 incoming_email.as_ref(),
+                Some(&existing_context_id),
+                Some(&incoming_context_id),
             )
         })
         .map(|a| a.id)
@@ -562,6 +931,7 @@ pub fn upsert_account(payload: CodebuddyOAuthCompletePayload) -> Result<Codebudd
     let existing = load_account(&account_id);
     let tags = existing.as_ref().and_then(|a| a.tags.clone());
     let created_at = existing.as_ref().map(|a| a.created_at).unwrap_or(now);
+    let account_scope = payload_account_scope(&payload);
 
     let mut account = existing.unwrap_or(CodebuddyAccount {
         id: account_id.clone(),
@@ -570,6 +940,9 @@ pub fn upsert_account(payload: CodebuddyOAuthCompletePayload) -> Result<Codebudd
         nickname: payload.nickname.clone(),
         enterprise_id: payload.enterprise_id.clone(),
         enterprise_name: payload.enterprise_name.clone(),
+        account_scope: Some(account_scope),
+        account_context_id: Some(incoming_context_id.clone()),
+        account_context_raw: payload.account_context_raw.clone(),
         tags,
         access_token: payload.access_token.clone(),
         refresh_token: payload.refresh_token.clone(),
@@ -826,10 +1199,17 @@ fn upsert_account_record_from_payload(
     let now = now_ts();
     let incoming_uid = normalize_identity(payload.uid.as_deref());
     let incoming_email = normalize_email_identity(Some(payload.email.as_str()));
-    let identity_seed = incoming_uid
+    let incoming_context_id = payload_account_context_id(&payload);
+    let identity_part = incoming_uid
         .or_else(|| incoming_email)
         .unwrap_or_else(|| "codebuddy_cn_user".to_string());
+    let domain_part = normalize_context_part(payload.domain.as_deref(), "default");
+    let identity_seed = format!(
+        "codebuddy-cn:{}:{}:{}",
+        identity_part, incoming_context_id, domain_part
+    );
     let generated_id = format!("codebuddy_cn_{:x}", md5::compute(identity_seed.as_bytes()));
+    let account_scope = payload_account_scope(&payload);
 
     let account = CodebuddyAccount {
         id: generated_id,
@@ -838,6 +1218,9 @@ fn upsert_account_record_from_payload(
         nickname: payload.nickname,
         enterprise_id: payload.enterprise_id,
         enterprise_name: payload.enterprise_name,
+        account_scope: Some(account_scope),
+        account_context_id: Some(incoming_context_id),
+        account_context_raw: payload.account_context_raw,
         tags: None,
         access_token: payload.access_token,
         refresh_token: payload.refresh_token,
@@ -923,12 +1306,32 @@ fn payload_from_import_value(raw: Value) -> Result<CodebuddyOAuthCompletePayload
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let account_scope = obj
+        .get("account_scope")
+        .or_else(|| obj.get("accountScope"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let account_context_id = obj
+        .get("account_context_id")
+        .or_else(|| obj.get("accountContextId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let account_context_raw = obj
+        .get("account_context_raw")
+        .or_else(|| obj.get("accountContextRaw"))
+        .cloned();
+
     Ok(CodebuddyOAuthCompletePayload {
         email,
         uid,
         nickname,
         enterprise_id,
         enterprise_name,
+        account_scope,
+        account_context_id,
+        account_context_raw,
         access_token,
         refresh_token,
         token_type: Some("Bearer".to_string()),
@@ -939,10 +1342,19 @@ fn payload_from_import_value(raw: Value) -> Result<CodebuddyOAuthCompletePayload
         dosage_notify_zh: None,
         dosage_notify_en: None,
         payment_type: None,
-        quota_raw: None,
-        auth_raw: obj.get("auth_raw").cloned(),
-        profile_raw: obj.get("profile_raw").cloned(),
-        usage_raw: obj.get("usage_raw").cloned(),
+        quota_raw: obj
+            .get("quota_raw")
+            .or_else(|| obj.get("quotaRaw"))
+            .cloned(),
+        auth_raw: obj.get("auth_raw").or_else(|| obj.get("authRaw")).cloned(),
+        profile_raw: obj
+            .get("profile_raw")
+            .or_else(|| obj.get("profileRaw"))
+            .cloned(),
+        usage_raw: obj
+            .get("usage_raw")
+            .or_else(|| obj.get("usageRaw"))
+            .cloned(),
         status: Some("normal".to_string()),
         status_reason: None,
     })
@@ -988,12 +1400,7 @@ pub async fn checkin_account(
 
     if status.today_checked_in {
         let now = chrono::Utc::now().timestamp();
-        update_checkin_info(
-            account_id,
-            Some(now),
-            status.streak_days as i32,
-            None,
-        )?;
+        update_checkin_info(account_id, Some(now), status.streak_days as i32, None)?;
         return Ok((status, None));
     }
 
